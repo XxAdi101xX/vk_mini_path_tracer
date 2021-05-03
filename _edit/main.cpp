@@ -8,6 +8,7 @@
 #define NVVK_ALLOC_DEDICATED
 #include <nvvk/allocator_vk.hpp>  // For NVVK memory allocators
 #include <nvvk/context_vk.hpp>
+#include <nvvk/descriptorsets_vk.hpp> // For nvvk::DescriptorSetContainer
 #include <nvvk/shaders_vk.hpp>  // For nvvk::createShaderModule
 #include <nvvk/structs_vk.hpp> // Using nvvk::make
 
@@ -28,20 +29,6 @@ int main(int argc, const char** argv)
   deviceInfo.addDeviceExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, false, &asFeatures);
   VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = nvvk::make<VkPhysicalDeviceRayQueryFeaturesKHR>();
   deviceInfo.addDeviceExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME, false, &rayQueryFeatures);
-
-  // Add the required device extensions for Debug Printf. If this is confusing,
-  // don't worry; we'll remove this in the next chapter.
-  deviceInfo.addDeviceExtension(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
-  VkValidationFeaturesEXT      validationInfo = nvvk::make<VkValidationFeaturesEXT>();
-  VkValidationFeatureEnableEXT validationFeatureToEnable = VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT;
-  validationInfo.enabledValidationFeatureCount = 1;
-  validationInfo.pEnabledValidationFeatures = &validationFeatureToEnable;
-  deviceInfo.instanceCreateInfoExt = &validationInfo;
-#ifdef _WIN32
-  _putenv_s("DEBUG_PRINTF_TO_STDOUT", "1");
-#else   // If not _WIN32
-  putenv("DEBUG_PRINTF_TO_STDOUT=1");
-#endif  // _WIN32
 
   nvvk::Context context; // Encasulates the device state
   context.init(deviceInfo);
@@ -73,6 +60,28 @@ int main(int argc, const char** argv)
   VkCommandPool cmdPool;
   NVVK_CHECK(vkCreateCommandPool(context, &cmdPoolCreateInfo, nullptr, &cmdPool));
 
+  // Here's the list of bindings for the descriptor set layout, from raytrace.comp.glsl:
+  // 0 - a storage buffer (the buffer `buffer`)
+  nvvk::DescriptorSetContainer descriptorSetContainer(context);
+  descriptorSetContainer.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+
+  // Create a layout from the list of bindings
+  descriptorSetContainer.initLayout();
+
+  // Create a descriptor pool from the list of bindings with space for one set, and all the set
+  descriptorSetContainer.initPool(1);
+  // Create a simple pipeline layout from the descriptor set layout
+  descriptorSetContainer.initPipeLayout();
+
+  // Write a single descriptor in the descriptor set
+  VkDescriptorBufferInfo descriptorBufferInfo{};
+  descriptorBufferInfo.buffer = buffer.buffer;
+  descriptorBufferInfo.range = bufferSizeBytes;
+  VkWriteDescriptorSet writeDescriptor = descriptorSetContainer.makeWrite(0 /*set index*/, 0 /*binding*/, &descriptorBufferInfo);
+  vkUpdateDescriptorSets(context,              // The context
+      1, &writeDescriptor,  // An array of VkWriteDescriptorSet objects
+      0, nullptr);          // An array of VkCopyDescriptorSet objects (unused)
+
   // Shader loading and pipeline creation
   VkShaderModule rayTraceModule = nvvk::createShaderModule(context, nvh::loadFile("shaders/raytrace.comp.glsl.spv", true, searchPaths));
 
@@ -82,17 +91,10 @@ int main(int argc, const char** argv)
   shaderStageCreateInfo.module = rayTraceModule;
   shaderStageCreateInfo.pName = "main";
 
-  // Create pipeline layout (empty for now)
-  VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = nvvk::make<VkPipelineLayoutCreateInfo>();
-  pipelineLayoutCreateInfo.setLayoutCount = 0;
-  pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
-  VkPipelineLayout pipelineLayout;
-  NVVK_CHECK(vkCreatePipelineLayout(context, &pipelineLayoutCreateInfo, VK_NULL_HANDLE, &pipelineLayout));
-
   // Create compute pipeline
   VkComputePipelineCreateInfo pipelineCreateInfo = nvvk::make<VkComputePipelineCreateInfo>();
   pipelineCreateInfo.stage = shaderStageCreateInfo;
-  pipelineCreateInfo.layout = pipelineLayout;
+  pipelineCreateInfo.layout = descriptorSetContainer.getPipeLayout();
   // Don't modify flags, basePipelineHandle, or basePipelineIndex
   VkPipeline computePipeline;
   NVVK_CHECK(vkCreateComputePipelines(context,                 // Device
@@ -117,8 +119,12 @@ int main(int argc, const char** argv)
   // Bind the compute pipeline
   vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
 
-  // Run the compute shader with one workgroup for now
-  vkCmdDispatch(cmdBuffer, 1, 1, 1);
+  // Bind the descriptor set
+  VkDescriptorSet descriptorSet = descriptorSetContainer.getSet(0);
+  vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, descriptorSetContainer.getPipeLayout(), 0, 1, &descriptorSet, 0, nullptr);
+
+  // Run the compute shader with enough workgroups to cover the entire buffer:
+  vkCmdDispatch(cmdBuffer, (uint32_t(render_width) + workgroup_width - 1) / workgroup_width, (uint32_t(render_height) + workgroup_height - 1) / workgroup_height, 1);
 
   // Ensure that memory writes by the vkCmdFillBuffer call
   // are available to read from the CPU." (In other words, "Flush the GPU caches
@@ -152,7 +158,7 @@ int main(int argc, const char** argv)
 
   vkDestroyPipeline(context ,computePipeline, nullptr);
   vkDestroyShaderModule(context, rayTraceModule, nullptr);
-  vkDestroyPipelineLayout(context, pipelineLayout, nullptr);
+  descriptorSetContainer.deinit();
   vkFreeCommandBuffers(context, cmdPool, 1, &cmdBuffer);
   vkDestroyCommandPool(context, cmdPool, nullptr);
   allocator.destroy(buffer);
