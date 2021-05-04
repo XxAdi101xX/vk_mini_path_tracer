@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #version 460 
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_ray_query : require
 
 layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
@@ -11,6 +12,7 @@ layout(binding = 0, set = 0, scalar) buffer storageBuffer
 {
   vec3 imageData[];
 };
+layout(binding = 1, set = 0) uniform accelerationStructureEXT tlas;
 
 void main()
 {
@@ -34,12 +36,54 @@ void main()
     return;
   }
 
-  // Create a vector of 3 floats with a different color per pixel.
-  const vec3 pixelColor = vec3(float(pixel.x) / resolution.x,  // Red
-                               float(pixel.y) / resolution.y,  // Green
-                               0.0);                           // Blue
+  // This scene uses a right-handed coordinate system like the OBJ file format, where the
+  // +x axis points right, the +y axis points up, and the -z axis points into the screen.
+  // The camera is located at (-0.001, 1, 6).
+  const vec3 cameraOrigin = vec3(-0.001, 1.0, 6.0);
+  // Rays always originate at the camera for now. In the future, they'll
+  // bounce around the scene.
+  vec3 rayOrigin = cameraOrigin;
+  // Compute the direction of the ray for this pixel. To do this, we first
+  // transform the screen coordinates to look like this, where a is the
+  // aspect ratio (width/height) of the screen:
+  //           1
+  //    .------+------.
+  //    |      |      |
+  // -a + ---- 0 ---- + a
+  //    |      |      |
+  //    '------+------'
+  //          -1
+  const vec2 screenUV = vec2(2.0 * (float(pixel.x) + 0.5 - 0.5 * resolution.x) / resolution.y,    //
+                             -(2.0 * (float(pixel.y) + 0.5 - 0.5 * resolution.y) / resolution.y)  // Flip the y axis
+  );
+  // Next, define the field of view by the vertical slope of the topmost rays,
+  // and create a ray direction:
+  const float fovVerticalSlope = 1.0 / 5.0;
+  vec3        rayDirection     = vec3(fovVerticalSlope * screenUV.x, fovVerticalSlope * screenUV.y, -1.0);
+
+  // Trace the ray and see if and where it intersects the scene!
+  // First, initialize a ray query object:
+  rayQueryEXT rayQuery;
+  rayQueryInitializeEXT(rayQuery,              // Ray query
+                        tlas,                  // Top-level acceleration structure
+                        gl_RayFlagsOpaqueEXT,  // Ray flags, here saying "treat all geometry as opaque"
+                        0xFF,                  // 8-bit instance mask, here saying "trace against all instances"
+                        rayOrigin,             // Ray origin
+                        0.0,                   // Minimum t-value
+                        rayDirection,          // Ray direction
+                        10000.0);              // Maximum t-value
+
+  // Start traversal, and loop over all ray-scene intersections. When this finishes,
+  // rayQuery stores a "committed" intersection, the closest intersection (if any).
+  while(rayQueryProceedEXT(rayQuery))
+  {
+  }
+
+  // Get the t-value of the intersection (if there's no intersection, this will
+  // be tMax = 10000.0). "true" says "get the committed intersection."
+  const float t = rayQueryGetIntersectionTEXT(rayQuery, true);
   // Get the index of this invocation in the buffer:
-  uint linearIndex = resolution.x * pixel.y + pixel.x;
-  // Write the color to the buffer.
-  imageData[linearIndex] = pixelColor;
+  uint linearIndex       = resolution.x * pixel.y + pixel.x;
+  // Give the pixel the color (t/10, t/10, t/10):
+  imageData[linearIndex] = vec3(t / 10.0);
 }
