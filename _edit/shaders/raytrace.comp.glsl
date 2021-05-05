@@ -79,11 +79,25 @@ void main()
   {
   }
 
-  // Get the t-value of the intersection (if there's no intersection, this will
-  // be tMax = 10000.0). "true" says "get the committed intersection."
-  const float t = rayQueryGetIntersectionTEXT(rayQuery, true);
+  vec3 pixelColor;
+  // Get the type of committed (true) intersection - nothing, a triangle, or
+  // a generated object
+  if(rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
+  {
+    // Ray hit a triangle
+    // Create a vec3(0, b.x, b.y)
+    pixelColor = vec3(0.0, rayQueryGetIntersectionBarycentricsEXT(rayQuery, true));
+    // Set the first element to 1 - b.x - b.y, setting pixelColor to
+    // (1 - b.x - b.y, b.x, b.y).
+    pixelColor.x = 1 - pixelColor.y - pixelColor.z;
+  }
+  else
+  {
+    // Ray hit the sky
+    pixelColor = vec3(0.0, 0.0, 0.5);
+  }
+
   // Get the index of this invocation in the buffer:
   uint linearIndex       = resolution.x * pixel.y + pixel.x;
-  // Give the pixel the color (t/10, t/10, t/10):
-  imageData[linearIndex] = vec3(t / 10.0);
+  imageData[linearIndex] = pixelColor;
 }
