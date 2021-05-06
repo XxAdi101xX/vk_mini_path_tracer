@@ -189,6 +189,8 @@ int main(int argc, const char** argv)
   nvvk::DescriptorSetContainer descriptorSetContainer(context);
   descriptorSetContainer.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
   descriptorSetContainer.addBinding(1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  descriptorSetContainer.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  descriptorSetContainer.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
 
   // Create a layout from the list of bindings
   descriptorSetContainer.initLayout();
@@ -199,7 +201,7 @@ int main(int argc, const char** argv)
   descriptorSetContainer.initPipeLayout();
 
   // Write values into the descriptor set.
-  std::array<VkWriteDescriptorSet, 2> writeDescriptorSets;
+  std::array<VkWriteDescriptorSet, 4> writeDescriptorSets;
   // 0
   VkDescriptorBufferInfo descriptorBufferInfo{};
   descriptorBufferInfo.buffer = buffer.buffer;    // The VkBuffer object
@@ -211,8 +213,17 @@ int main(int argc, const char** argv)
   descriptorAS.accelerationStructureCount = 1;
   descriptorAS.pAccelerationStructures = &tlasCopy;
   writeDescriptorSets[1] = descriptorSetContainer.makeWrite(0, 1, &descriptorAS);
-  vkUpdateDescriptorSets(
-      context,                                            // The context
+  // 2
+  VkDescriptorBufferInfo vertexDescriptorBufferInfo{};
+  vertexDescriptorBufferInfo.buffer = vertexBuffer.buffer;
+  vertexDescriptorBufferInfo.range = VK_WHOLE_SIZE;
+  writeDescriptorSets[2] = descriptorSetContainer.makeWrite(0, 2, &vertexDescriptorBufferInfo);
+  // 3
+  VkDescriptorBufferInfo indexDescriptorBufferInfo{};
+  indexDescriptorBufferInfo.buffer = indexBuffer.buffer;
+  indexDescriptorBufferInfo.range = VK_WHOLE_SIZE;
+  writeDescriptorSets[3] = descriptorSetContainer.makeWrite(0, 3, &indexDescriptorBufferInfo);
+  vkUpdateDescriptorSets(context,                                            // The context
       static_cast<uint32_t>(writeDescriptorSets.size()),  // Number of VkWriteDescriptorSet objects
       writeDescriptorSets.data(),                         // Pointer to VkWriteDescriptorSet objects
       0, nullptr);  // An array of VkCopyDescriptorSet objects (unused)

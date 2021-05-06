@@ -13,6 +13,14 @@ layout(binding = 0, set = 0, scalar) buffer storageBuffer
   vec3 imageData[];
 };
 layout(binding = 1, set = 0) uniform accelerationStructureEXT tlas;
+layout(binding = 2, set = 0, scalar) buffer Vertices
+{
+  vec3 vertices[];
+};
+layout(binding = 3, set = 0, scalar) buffer Indices
+{
+  uint indices[];
+};
 
 void main()
 {
@@ -85,11 +93,35 @@ void main()
   if(rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
   {
     // Ray hit a triangle
-    // Create a vec3(0, b.x, b.y)
-    pixelColor = vec3(0.0, rayQueryGetIntersectionBarycentricsEXT(rayQuery, true));
-    // Set the first element to 1 - b.x - b.y, setting pixelColor to
-    // (1 - b.x - b.y, b.x, b.y).
-    pixelColor.x = 1 - pixelColor.y - pixelColor.z;
+    // Get the ID of the triangle
+    const int primitiveID = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true);
+
+    // Get the indices of the vertices of the triangle
+    const uint i0 = indices[3 * primitiveID + 0];
+    const uint i1 = indices[3 * primitiveID + 1];
+    const uint i2 = indices[3 * primitiveID + 2];
+
+    // Get the vertices of the triangle
+    const vec3 v0 = vertices[i0];
+    const vec3 v1 = vertices[i1];
+    const vec3 v2 = vertices[i2];
+
+    // Compute the normal of the triangle in object space, using the right-hand
+    // rule. Since our transformation matrix is the identity, object space
+    // is the same as world space.
+    //    v2       .
+    //    |\       .
+    //    | \      .
+    //    |  \     .
+    //    |/  \    .
+    //    /    \   .
+    //   /|     \  .
+    //  L v0----v1 .
+    // n
+    const vec3 objectNormal = normalize(cross(v1 - v0, v2 - v0));
+
+    // For this chapter, convert the normal into a visible color.
+    pixelColor = vec3(0.5) + 0.5 * objectNormal;
   }
   else
   {
