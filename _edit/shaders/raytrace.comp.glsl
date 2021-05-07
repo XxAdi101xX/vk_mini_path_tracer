@@ -22,6 +22,69 @@ layout(binding = 3, set = 0, scalar) buffer Indices
   uint indices[];
 };
 
+vec3 skyColor(vec3 direction)
+{
+  // +y in the world space is up, so:
+  if (direction.y > 0.0f)
+  {
+    return mix(vec3(1.0f), vec3(0.25f, 0.5f, 1.0f), direction.y);
+  }
+  else
+  {
+    return vec3(0.03f);
+  }
+}
+
+struct HitInfo
+{
+  vec3 color;
+  vec3 worldPosition;
+  vec3 worldNormal;
+};
+
+HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
+{
+  HitInfo result;
+  // Get the ID of the triangle
+  const int primitiveID = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true);
+
+  // Get the indices of the vertices of the triangle
+  const uint i0 = indices[3 * primitiveID + 0];
+  const uint i1 = indices[3 * primitiveID + 1];
+  const uint i2 = indices[3 * primitiveID + 2];
+
+  // Get the vertices of the triangle
+  const vec3 v0 = vertices[i0];
+  const vec3 v1 = vertices[i1];
+  const vec3 v2 = vertices[i2];
+
+  // Get the barycentric coordinates of the intersection
+  vec3 barycentrics = vec3(0.0, rayQueryGetIntersectionBarycentricsEXT(rayQuery, true));
+  barycentrics.x    = 1.0 - barycentrics.y - barycentrics.z;
+
+  // Compute the coordinates of the intersection
+  const vec3 objectPos = v0 * barycentrics.x + v1 * barycentrics.y + v2 * barycentrics.z;
+  // For the main tutorial, object space is the same as world space:
+  result.worldPosition = objectPos;
+
+  // Compute the normal of the triangle in object space, using the right-hand rule:
+  //    v2      .
+  //    |\      .
+  //    | \     .
+  //    |/ \    .
+  //    /   \   .
+  //   /|    \  .
+  //  L v0---v1 .
+  // n
+  const vec3 objectNormal = normalize(cross(v1 - v0, v2 - v0));
+  // For the main tutorial, object space is the same as world space:
+  result.worldNormal = objectNormal;
+
+  result.color = vec3(0.7f);
+
+  return result;
+}
+
 void main()
 {
   // The resolution of the buffer, which in this case is a hardcoded vector
@@ -68,65 +131,58 @@ void main()
   // and create a ray direction:
   const float fovVerticalSlope = 1.0 / 5.0;
   vec3        rayDirection     = vec3(fovVerticalSlope * screenUV.x, fovVerticalSlope * screenUV.y, -1.0);
+  rayDirection = normalize(rayDirection);
 
-  // Trace the ray and see if and where it intersects the scene!
-  // First, initialize a ray query object:
-  rayQueryEXT rayQuery;
-  rayQueryInitializeEXT(rayQuery,              // Ray query
-                        tlas,                  // Top-level acceleration structure
-                        gl_RayFlagsOpaqueEXT,  // Ray flags, here saying "treat all geometry as opaque"
-                        0xFF,                  // 8-bit instance mask, here saying "trace against all instances"
-                        rayOrigin,             // Ray origin
-                        0.0,                   // Minimum t-value
-                        rayDirection,          // Ray direction
-                        10000.0);              // Maximum t-value
+  vec3 accumulatedRayColor = vec3(1.0);  // The amount of light that made it to the end of the current ray.
+  vec3 pixelColor          = vec3(0.0);
 
-  // Start traversal, and loop over all ray-scene intersections. When this finishes,
-  // rayQuery stores a "committed" intersection, the closest intersection (if any).
-  while(rayQueryProceedEXT(rayQuery))
+  // Limit the kernel to trace at most 32 segments (31 bounces)
+  for (int tracedSegments = 0; tracedSegments < 32; ++tracedSegments)
   {
-  }
+    // Trace the ray and see if and where it intersects the scene!
+    // First, initialize a ray query object:
+    rayQueryEXT rayQuery;
+    rayQueryInitializeEXT(rayQuery,              // Ray query
+                          tlas,                  // Top-level acceleration structure
+                          gl_RayFlagsOpaqueEXT,  // Ray flags, here saying "treat all geometry as opaque"
+                          0xFF,                  // 8-bit instance mask, here saying "trace against all instances"
+                          rayOrigin,             // Ray origin
+                          0.0,                   // Minimum t-value
+                          rayDirection,          // Ray direction
+                          10000.0);              // Maximum t-value
 
-  vec3 pixelColor;
-  // Get the type of committed (true) intersection - nothing, a triangle, or
-  // a generated object
-  if(rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
-  {
-    // Ray hit a triangle
-    // Get the ID of the triangle
-    const int primitiveID = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true);
+    // Start traversal, and loop over all ray-scene intersections. When this finishes,
+    // rayQuery stores a "committed" intersection, the closest intersection (if any).
+    while(rayQueryProceedEXT(rayQuery))
+    {
+    }
 
-    // Get the indices of the vertices of the triangle
-    const uint i0 = indices[3 * primitiveID + 0];
-    const uint i1 = indices[3 * primitiveID + 1];
-    const uint i2 = indices[3 * primitiveID + 2];
+    // Get the type of committed (true) intersection - nothing, a triangle, or
+    // a generated object
+    if(rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
+    {
+      // Ray hit a triangle
+      HitInfo hitInfo = getObjectHitInfo(rayQuery);
 
-    // Get the vertices of the triangle
-    const vec3 v0 = vertices[i0];
-    const vec3 v1 = vertices[i1];
-    const vec3 v2 = vertices[i2];
+      // Apply color absorption by multiplying the albedo with the current ray color.
+      accumulatedRayColor *= hitInfo.color;
 
-    // Compute the normal of the triangle in object space, using the right-hand
-    // rule. Since our transformation matrix is the identity, object space
-    // is the same as world space.
-    //    v2       .
-    //    |\       .
-    //    | \      .
-    //    |  \     .
-    //    |/  \    .
-    //    /    \   .
-    //   /|     \  .
-    //  L v0----v1 .
-    // n
-    const vec3 objectNormal = normalize(cross(v1 - v0, v2 - v0));
+      // Flip the normal so it points against the ray direction:
+      hitInfo.worldNormal = faceforward(hitInfo.worldNormal, rayDirection, hitInfo.worldNormal);
 
-    // For this chapter, convert the normal into a visible color.
-    pixelColor = vec3(0.5) + 0.5 * objectNormal;
-  }
-  else
-  {
-    // Ray hit the sky
-    pixelColor = vec3(0.0, 0.0, 0.5);
+      // Start a new ray at the hit position, but slightly offsetted along the world normal to avoid self-intersection in cases when the 
+      // ray start right at or slightly behind the intersection point
+      rayOrigin = hitInfo.worldPosition + 0.0001 * hitInfo.worldNormal;
+
+      // Reflect the direction of the ray using the triangle normal:
+      rayDirection = reflect(rayDirection, hitInfo.worldNormal);
+    }
+    else
+    {
+      // Ray hit the sky
+      pixelColor = accumulatedRayColor * skyColor(rayDirection);
+      break;
+    }
   }
 
   // Get the index of this invocation in the buffer:
