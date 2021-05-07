@@ -22,6 +22,22 @@ layout(binding = 3, set = 0, scalar) buffer Indices
   uint indices[];
 };
 
+// Random number generation using pcg32i_random_t, using inc = 1. Our random state is a uint.
+uint stepRNG(uint rngState)
+{
+  return rngState * 747796405 + 1;
+}
+
+// Steps the RNG and returns a floating-point value between 0 and 1 inclusive.
+float stepAndOutputRNGFloat(inout uint rngState)
+{
+  // Condensed version of pcg_output_rxs_m_xs_32_32, with simple conversion to floating-point [0,1].
+  rngState  = stepRNG(rngState);
+  uint word = ((rngState >> ((rngState >> 28) + 4)) ^ rngState) * 277803737;
+  word      = (word >> 22) ^ word;
+  return float(word) / 4294967295.0f;
+}
+
 vec3 skyColor(vec3 direction)
 {
   // +y in the world space is up, so:
@@ -107,85 +123,99 @@ void main()
     return;
   }
 
+  // State of the random number generator.
+  uint rngState = resolution.x * pixel.y + pixel.x;  // Initial seed
+
   // This scene uses a right-handed coordinate system like the OBJ file format, where the
   // +x axis points right, the +y axis points up, and the -z axis points into the screen.
   // The camera is located at (-0.001, 1, 6).
   const vec3 cameraOrigin = vec3(-0.001, 1.0, 6.0);
-  // Rays always originate at the camera for now. In the future, they'll
-  // bounce around the scene.
-  vec3 rayOrigin = cameraOrigin;
-  // Compute the direction of the ray for this pixel. To do this, we first
-  // transform the screen coordinates to look like this, where a is the
-  // aspect ratio (width/height) of the screen:
-  //           1
-  //    .------+------.
-  //    |      |      |
-  // -a + ---- 0 ---- + a
-  //    |      |      |
-  //    '------+------'
-  //          -1
-  const vec2 screenUV = vec2(2.0 * (float(pixel.x) + 0.5 - 0.5 * resolution.x) / resolution.y,    //
-                             -(2.0 * (float(pixel.y) + 0.5 - 0.5 * resolution.y) / resolution.y)  // Flip the y axis
-  );
-  // Next, define the field of view by the vertical slope of the topmost rays,
-  // and create a ray direction:
+  // Define the field of view by the vertical slope of the topmost rays:
   const float fovVerticalSlope = 1.0 / 5.0;
-  vec3        rayDirection     = vec3(fovVerticalSlope * screenUV.x, fovVerticalSlope * screenUV.y, -1.0);
-  rayDirection = normalize(rayDirection);
 
-  vec3 accumulatedRayColor = vec3(1.0);  // The amount of light that made it to the end of the current ray.
-  vec3 pixelColor          = vec3(0.0);
+  // The sum of the colors of all of the samples.
+  vec3 summedPixelColor = vec3(0.0);
 
-  // Limit the kernel to trace at most 32 segments (31 bounces)
-  for (int tracedSegments = 0; tracedSegments < 32; ++tracedSegments)
+  // Limit the kernel to trace at most 64 samples.
+  const int NUM_SAMPLES = 64;
+  for(int sampleIdx = 0; sampleIdx < NUM_SAMPLES; sampleIdx++)
   {
-    // Trace the ray and see if and where it intersects the scene!
-    // First, initialize a ray query object:
-    rayQueryEXT rayQuery;
-    rayQueryInitializeEXT(rayQuery,              // Ray query
-                          tlas,                  // Top-level acceleration structure
-                          gl_RayFlagsOpaqueEXT,  // Ray flags, here saying "treat all geometry as opaque"
-                          0xFF,                  // 8-bit instance mask, here saying "trace against all instances"
-                          rayOrigin,             // Ray origin
-                          0.0,                   // Minimum t-value
-                          rayDirection,          // Ray direction
-                          10000.0);              // Maximum t-value
+    // Rays always originate at the camera for now. In the future, they'll
+    // bounce around the scene.
+    vec3 rayOrigin = cameraOrigin;
+    // Compute the direction of the ray for this pixel. To do this, we first
+    // transform the screen coordinates to look like this, where a is the
+    // aspect ratio (width/height) of the screen:
+    //           1
+    //    .------+------.
+    //    |      |      |
+    // -a + ---- 0 ---- + a
+    //    |      |      |
+    //    '------+------'
+    //          -1
+    const vec2 randomPixelCenter = vec2(pixel) + vec2(stepAndOutputRNGFloat(rngState), stepAndOutputRNGFloat(rngState));
+    const vec2 screenUV          = vec2((2.0 * randomPixelCenter.x - resolution.x) / resolution.y,    //
+                               -(2.0 * randomPixelCenter.y - resolution.y) / resolution.y);  // Flip the y axis
+    // Create a ray direction:
+    vec3 rayDirection = vec3(fovVerticalSlope * screenUV.x, fovVerticalSlope * screenUV.y, -1.0);
+    rayDirection      = normalize(rayDirection);
 
-    // Start traversal, and loop over all ray-scene intersections. When this finishes,
-    // rayQuery stores a "committed" intersection, the closest intersection (if any).
-    while(rayQueryProceedEXT(rayQuery))
+    vec3 accumulatedRayColor = vec3(1.0);  // The amount of light that made it to the end of the current ray.
+
+    // Limit the kernel to trace at most 32 segments.
+    for(int tracedSegments = 0; tracedSegments < 32; tracedSegments++)
     {
-    }
+      // Trace the ray and see if and where it intersects the scene!
+      // First, initialize a ray query object:
+      rayQueryEXT rayQuery;
+      rayQueryInitializeEXT(rayQuery,              // Ray query
+                            tlas,                  // Top-level acceleration structure
+                            gl_RayFlagsOpaqueEXT,  // Ray flags, here saying "treat all geometry as opaque"
+                            0xFF,                  // 8-bit instance mask, here saying "trace against all instances"
+                            rayOrigin,             // Ray origin
+                            0.0,                   // Minimum t-value
+                            rayDirection,          // Ray direction
+                            10000.0);              // Maximum t-value
 
-    // Get the type of committed (true) intersection - nothing, a triangle, or
-    // a generated object
-    if(rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
-    {
-      // Ray hit a triangle
-      HitInfo hitInfo = getObjectHitInfo(rayQuery);
+      // Start traversal, and loop over all ray-scene intersections. When this finishes,
+      // rayQuery stores a "committed" intersection, the closest intersection (if any).
+      while(rayQueryProceedEXT(rayQuery))
+      {
+      }
 
-      // Apply color absorption by multiplying the albedo with the current ray color.
-      accumulatedRayColor *= hitInfo.color;
+      // Get the type of committed (true) intersection - nothing, a triangle, or
+      // a generated object
+      if(rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
+      {
+        // Ray hit a triangle
+        HitInfo hitInfo = getObjectHitInfo(rayQuery);
 
-      // Flip the normal so it points against the ray direction:
-      hitInfo.worldNormal = faceforward(hitInfo.worldNormal, rayDirection, hitInfo.worldNormal);
+        // Apply color absorption
+        accumulatedRayColor *= hitInfo.color;
 
-      // Start a new ray at the hit position, but slightly offsetted along the world normal to avoid self-intersection in cases when the 
-      // ray start right at or slightly behind the intersection point
-      rayOrigin = hitInfo.worldPosition + 0.0001 * hitInfo.worldNormal;
+        // Start a new ray at the hit position, but offset it slightly along
+        // the normal against rayDirection:
+        rayOrigin = hitInfo.worldPosition - 0.0001 * sign(dot(rayDirection, hitInfo.worldNormal)) * hitInfo.worldNormal;
 
-      // Reflect the direction of the ray using the triangle normal:
-      rayDirection = reflect(rayDirection, hitInfo.worldNormal);
-    }
-    else
-    {
-      // Ray hit the sky
-      pixelColor = accumulatedRayColor * skyColor(rayDirection);
-      break;
+        // Reflect the direction of the ray using the triangle normal:
+        rayDirection = reflect(rayDirection, hitInfo.worldNormal);
+      }
+      else
+      {
+        // Ray hit the sky
+        accumulatedRayColor *= skyColor(rayDirection);
+        
+        // Sum this with the pixel's other samples.
+        // (Note that we treat a ray that didn't find a light source as if it had
+        // an accumulated color of (0, 0, 0)).
+        summedPixelColor += accumulatedRayColor;
+    
+        break;
+      }
     }
   }
 
   // Get the index of this invocation in the buffer:
   uint linearIndex       = resolution.x * pixel.y + pixel.x;
-  imageData[linearIndex] = pixelColor;
+  imageData[linearIndex] = summedPixelColor / float(NUM_SAMPLES);  // Take the average
 }
