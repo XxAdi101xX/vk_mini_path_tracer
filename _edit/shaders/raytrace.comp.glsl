@@ -38,6 +38,18 @@ float stepAndOutputRNGFloat(inout uint rngState)
   return float(word) / 4294967295.0f;
 }
 
+const float k_pi = 3.14159265;
+// Uses the Box-Muller transform to return a normally distributed (centered at 0, standard deviation 1) 2D point
+vec2 randomGaussian(inout uint rngState)
+{
+  // Almost uniform in (0, 1], ensure that number can't be 0
+  const float u1 = max(1e-38, stepAndOutputRNGFloat(rngState));
+  const float u2 = stepAndOutputRNGFloat(rngState); // in [0, 1]
+  const float r = sqrt(-2.0 * log(u1));
+  const float theta = 2 * k_pi * u2; // Random in [0, 2pi]
+  return r * vec2(cos(theta), sin(theta));
+}
+
 vec3 skyColor(vec3 direction)
 {
   // +y in the world space is up, so:
@@ -97,6 +109,7 @@ HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
   result.worldNormal = objectNormal;
 
   result.color = vec3(0.7f);
+  //result.color = vec3(0.5) + 0.5 * result.worldNormal;
 
   return result;
 }
@@ -153,7 +166,9 @@ void main()
     //    |      |      |
     //    '------+------'
     //          -1
-    const vec2 randomPixelCenter = vec2(pixel) + vec2(stepAndOutputRNGFloat(rngState), stepAndOutputRNGFloat(rngState));
+    // Use a Gaussian with standard deviation 0.375 centered at the center of
+    // the pixel:
+    const vec2 randomPixelCenter = vec2(pixel) + vec2(0.5) + 0.375 * randomGaussian(rngState);
     const vec2 screenUV          = vec2((2.0 * randomPixelCenter.x - resolution.x) / resolution.y,    //
                                -(2.0 * randomPixelCenter.y - resolution.y) / resolution.y);  // Flip the y axis
     // Create a ray direction:
@@ -197,8 +212,16 @@ void main()
         // the normal against rayDirection:
         rayOrigin = hitInfo.worldPosition - 0.0001 * sign(dot(rayDirection, hitInfo.worldNormal)) * hitInfo.worldNormal;
 
-        // Reflect the direction of the ray using the triangle normal:
-        rayDirection = reflect(rayDirection, hitInfo.worldNormal);
+        // For a random diffuse bounce direction, we follow the approach of
+        // Ray Tracing in One Weekend, and generate a random point on a sphere
+        // of radius 1 centered at the normal. This uses the random_unit_vector
+        // function from chapter 8.5:
+        const float theta = 2.0 * k_pi * stepAndOutputRNGFloat(rngState);  // Random in [0, 2pi]
+        const float u     = 2.0 * stepAndOutputRNGFloat(rngState) - 1.0;   // Random in [-1, 1]
+        const float r     = sqrt(1.0 - u * u);
+        rayDirection      = hitInfo.worldNormal + vec3(r * cos(theta), r * sin(theta), u);
+        // Then normalize the ray direction:
+        rayDirection = normalize(rayDirection);
       }
       else
       {
