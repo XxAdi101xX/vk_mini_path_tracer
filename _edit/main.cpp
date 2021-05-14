@@ -14,10 +14,7 @@
 #include <nvvk/shaders_vk.hpp>         // For nvvk::createShaderModule
 #include <nvvk/structs_vk.hpp>         // For nvvk::make
 
-static const uint64_t render_width = 800;
-static const uint64_t render_height = 600;
-static const uint32_t workgroup_width = 16;
-static const uint32_t workgroup_height = 8;
+#include "common.h"
 
 VkCommandBuffer AllocateAndBeginOneTimeCommandBuffer(VkDevice device, VkCommandPool cmdPool)
 {
@@ -77,7 +74,7 @@ int main(int argc, const char** argv)
   allocator.init(context, context.m_physicalDevice);
 
   // Create a buffer
-  VkDeviceSize bufferSizeBytes = render_width * render_height * 3 * sizeof(float);
+  VkDeviceSize bufferSizeBytes = RENDER_WIDTH * RENDER_HEIGHT * 3 * sizeof(float);
   VkBufferCreateInfo bufferCreateInfo = nvvk::make<VkBufferCreateInfo>();
   bufferCreateInfo.size = bufferSizeBytes;
   bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -167,7 +164,7 @@ int main(int argc, const char** argv)
   // Create the BLAS (nvvk::RaytracingBuilderKHR creates, records, ends, submits, and waits for command buffers, indicating that CPU thread waits until GPU is done building)
   nvvk::RaytracingBuilderKHR raytracingBuilder;
   raytracingBuilder.setup(context, &allocator, context.m_queueGCT);
-  raytracingBuilder.buildBlas(blases, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
+  raytracingBuilder.buildBlas(blases, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR);
 
   // Create an instance pointing to this BLAS, and build it into a TLAS
   std::vector<nvvk::RaytracingBuilderKHR::Instance> instances;
@@ -187,10 +184,10 @@ int main(int argc, const char** argv)
   // 0 - a storage buffer (the buffer `buffer`)
   // 1 - an acceleration structure (the TLAS)
   nvvk::DescriptorSetContainer descriptorSetContainer(context);
-  descriptorSetContainer.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-  descriptorSetContainer.addBinding(1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-  descriptorSetContainer.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-  descriptorSetContainer.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  descriptorSetContainer.addBinding(BINDING_IMAGEDATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  descriptorSetContainer.addBinding(BINDING_TLAS, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  descriptorSetContainer.addBinding(BINDING_VERTICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  descriptorSetContainer.addBinding(BINDING_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
 
   // Create a layout from the list of bindings
   descriptorSetContainer.initLayout();
@@ -206,23 +203,23 @@ int main(int argc, const char** argv)
   VkDescriptorBufferInfo descriptorBufferInfo{};
   descriptorBufferInfo.buffer = buffer.buffer;    // The VkBuffer object
   descriptorBufferInfo.range = bufferSizeBytes;  // The length of memory to bind; offset is 0.
-  writeDescriptorSets[0] = descriptorSetContainer.makeWrite(0 /*set index*/, 0 /*binding*/, &descriptorBufferInfo);
+  writeDescriptorSets[0] = descriptorSetContainer.makeWrite(0 /*set index*/, BINDING_IMAGEDATA /*binding*/, &descriptorBufferInfo);
   // 1
   VkWriteDescriptorSetAccelerationStructureKHR descriptorAS = nvvk::make<VkWriteDescriptorSetAccelerationStructureKHR>();
   VkAccelerationStructureKHR tlasCopy = raytracingBuilder.getAccelerationStructure();  // So that we can take its address
   descriptorAS.accelerationStructureCount = 1;
   descriptorAS.pAccelerationStructures = &tlasCopy;
-  writeDescriptorSets[1] = descriptorSetContainer.makeWrite(0, 1, &descriptorAS);
+  writeDescriptorSets[1] = descriptorSetContainer.makeWrite(0, BINDING_TLAS, &descriptorAS);
   // 2
   VkDescriptorBufferInfo vertexDescriptorBufferInfo{};
   vertexDescriptorBufferInfo.buffer = vertexBuffer.buffer;
   vertexDescriptorBufferInfo.range = VK_WHOLE_SIZE;
-  writeDescriptorSets[2] = descriptorSetContainer.makeWrite(0, 2, &vertexDescriptorBufferInfo);
+  writeDescriptorSets[2] = descriptorSetContainer.makeWrite(0, BINDING_VERTICES, &vertexDescriptorBufferInfo);
   // 3
   VkDescriptorBufferInfo indexDescriptorBufferInfo{};
   indexDescriptorBufferInfo.buffer = indexBuffer.buffer;
   indexDescriptorBufferInfo.range = VK_WHOLE_SIZE;
-  writeDescriptorSets[3] = descriptorSetContainer.makeWrite(0, 3, &indexDescriptorBufferInfo);
+  writeDescriptorSets[3] = descriptorSetContainer.makeWrite(0, BINDING_INDICES, &indexDescriptorBufferInfo);
   vkUpdateDescriptorSets(context,                                            // The context
       static_cast<uint32_t>(writeDescriptorSets.size()),  // Number of VkWriteDescriptorSet objects
       writeDescriptorSets.data(),                         // Pointer to VkWriteDescriptorSet objects
@@ -260,7 +257,7 @@ int main(int argc, const char** argv)
   vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, descriptorSetContainer.getPipeLayout(), 0, 1, &descriptorSet, 0, nullptr);
 
   // Run the compute shader with enough workgroups to cover the entire buffer:
-  vkCmdDispatch(cmdBuffer, (uint32_t(render_width) + workgroup_width - 1) / workgroup_width, (uint32_t(render_height) + workgroup_height - 1) / workgroup_height, 1);
+  vkCmdDispatch(cmdBuffer, (uint32_t(RENDER_WIDTH) + WORKGROUP_WIDTH - 1) / WORKGROUP_WIDTH, (uint32_t(RENDER_HEIGHT) + WORKGROUP_HEIGHT - 1) / WORKGROUP_HEIGHT, 1);
 
   // Ensure that memory writes by the vkCmdFillBuffer call
   // are available to read from the CPU." (In other words, "Flush the GPU caches
@@ -280,7 +277,7 @@ int main(int argc, const char** argv)
 
   // Get the image data back from the GPU
   void* data = allocator.map(buffer);
-  stbi_write_hdr("out.hdr", render_width, render_height, 3, reinterpret_cast<float*>(data));
+  stbi_write_hdr("out.hdr", RENDER_WIDTH, RENDER_HEIGHT, 3, reinterpret_cast<float*>(data));
   allocator.unmap(buffer);
 
   vkDestroyPipeline(context ,computePipeline, nullptr);
