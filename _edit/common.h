@@ -1,8 +1,17 @@
 // Common files shared across c++ CPU code and GLSL GPU Code
 #pragma once
 
-#define RENDER_WIDTH 800
-#define RENDER_HEIGHT 600
+#ifdef __cplusplus
+#include <cstdint>
+using uint = uint32_t;
+#endif  // #ifdef __cplusplus
+
+struct PushConstants
+{
+	uint render_width;
+	uint render_height;
+};
+
 #define WORKGROUP_WIDTH 16
 #define WORKGROUP_HEIGHT 8
 

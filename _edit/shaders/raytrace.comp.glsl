@@ -23,6 +23,10 @@ layout(binding = BINDING_INDICES, set = 0, scalar) buffer Indices
 {
   uint indices[];
 };
+layout(push_constant) uniform PushConsts
+{
+  PushConstants pushConstants;
+};
 
 // Random number generation using pcg32i_random_t, using inc = 1. Our random state is a uint.
 uint stepRNG(uint rngState)
@@ -120,7 +124,7 @@ void main()
 {
   // The resolution of the buffer, which in this case is a hardcoded vector
   // of 2 unsigned integers:
-  const uvec2 resolution = uvec2(RENDER_WIDTH, RENDER_HEIGHT);
+  const uvec2 resolution = uvec2(pushConstants.render_width, pushConstants.render_height);
 
   // Get the coordinates of the pixel for this invocation:
   //

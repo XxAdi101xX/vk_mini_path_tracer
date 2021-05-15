@@ -15,6 +15,7 @@
 #include <nvvk/structs_vk.hpp>         // For nvvk::make
 
 #include "common.h"
+PushConstants pushConstants{ 1024 /* render_width */, 600 /* render_height */ };
 
 VkCommandBuffer AllocateAndBeginOneTimeCommandBuffer(VkDevice device, VkCommandPool cmdPool)
 {
@@ -74,7 +75,7 @@ int main(int argc, const char** argv)
   allocator.init(context, context.m_physicalDevice);
 
   // Create a buffer
-  VkDeviceSize bufferSizeBytes = RENDER_WIDTH * RENDER_HEIGHT * 3 * sizeof(float);
+  VkDeviceSize bufferSizeBytes = pushConstants.render_width * pushConstants.render_height * 3 * sizeof(float);
   VkBufferCreateInfo bufferCreateInfo = nvvk::make<VkBufferCreateInfo>();
   bufferCreateInfo.size = bufferSizeBytes;
   bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -194,8 +195,15 @@ int main(int argc, const char** argv)
 
   // Create a descriptor pool from the list of bindings with space for one set, and all the set
   descriptorSetContainer.initPool(1);
+  // Create a push constant range describing the amoutn of data for the push constants
+  static_assert(sizeof(PushConstants) % 4 == 0, "Push constant size must be a multiple of 4 per the Vulkan spec!");
+  VkPushConstantRange pushConstantRange;
+  pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  pushConstantRange.offset = 0;
+  pushConstantRange.size = sizeof(pushConstants);
   // Create a simple pipeline layout from the descriptor set layout
-  descriptorSetContainer.initPipeLayout();
+  descriptorSetContainer.initPipeLayout(1,                   // Number of push constant ranges
+                                        &pushConstantRange); // Pointer to push constant ranges
 
   // Write values into the descriptor set.
   std::array<VkWriteDescriptorSet, 4> writeDescriptorSets;
@@ -256,8 +264,16 @@ int main(int argc, const char** argv)
   VkDescriptorSet descriptorSet = descriptorSetContainer.getSet(0);
   vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, descriptorSetContainer.getPipeLayout(), 0, 1, &descriptorSet, 0, nullptr);
 
+  // Push push constants:
+  vkCmdPushConstants(cmdBuffer,                // Command buffer
+      descriptorSetContainer.getPipeLayout(),  // Pipeline layout
+      VK_SHADER_STAGE_COMPUTE_BIT,             // Stage flags
+      0,                                       // Offset
+      sizeof(PushConstants),                   // Size in bytes
+      &pushConstants);                         // Data
+
   // Run the compute shader with enough workgroups to cover the entire buffer:
-  vkCmdDispatch(cmdBuffer, (uint32_t(RENDER_WIDTH) + WORKGROUP_WIDTH - 1) / WORKGROUP_WIDTH, (uint32_t(RENDER_HEIGHT) + WORKGROUP_HEIGHT - 1) / WORKGROUP_HEIGHT, 1);
+  vkCmdDispatch(cmdBuffer, (pushConstants.render_width + WORKGROUP_WIDTH - 1) / WORKGROUP_WIDTH, (pushConstants.render_height + WORKGROUP_HEIGHT - 1) / WORKGROUP_HEIGHT, 1);
 
   // Ensure that memory writes by the vkCmdFillBuffer call
   // are available to read from the CPU." (In other words, "Flush the GPU caches
@@ -277,7 +293,7 @@ int main(int argc, const char** argv)
 
   // Get the image data back from the GPU
   void* data = allocator.map(buffer);
-  stbi_write_hdr("out.hdr", RENDER_WIDTH, RENDER_HEIGHT, 3, reinterpret_cast<float*>(data));
+  stbi_write_hdr("out.hdr", pushConstants.render_width, pushConstants.render_height, 3, reinterpret_cast<float*>(data));
   allocator.unmap(buffer);
 
   vkDestroyPipeline(context ,computePipeline, nullptr);
