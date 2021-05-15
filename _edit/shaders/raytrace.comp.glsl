@@ -143,7 +143,7 @@ void main()
   }
 
   // State of the random number generator.
-  uint rngState = resolution.x * pixel.y + pixel.x;  // Initial seed
+  uint rngState = (pushConstants.sample_batch * resolution.y + pixel.y) * resolution.x + pixel.x;  // Initial seed
 
   // This scene uses a right-handed coordinate system like the OBJ file format, where the
   // +x axis points right, the +y axis points up, and the -z axis points into the screen.
@@ -246,5 +246,12 @@ void main()
 
   // Get the index of this invocation in the buffer:
   uint linearIndex       = resolution.x * pixel.y + pixel.x;
-  imageData[linearIndex] = summedPixelColor / float(NUM_SAMPLES);  // Take the average
+  // Blend with the averaged image in the buffer:
+  vec3 averagePixelColor = summedPixelColor / float(NUM_SAMPLES);
+  if(pushConstants.sample_batch != 0)
+  {
+    averagePixelColor =
+        (pushConstants.sample_batch * imageData[linearIndex] + averagePixelColor) / (pushConstants.sample_batch + 1);
+  }
+  imageData[linearIndex] = averagePixelColor;
 }

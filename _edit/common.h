@@ -10,6 +10,7 @@ struct PushConstants
 {
 	uint render_width;
 	uint render_height;
+	uint sample_batch;
 };
 
 #define WORKGROUP_WIDTH 16

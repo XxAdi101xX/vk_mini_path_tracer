@@ -15,7 +15,7 @@
 #include <nvvk/structs_vk.hpp>         // For nvvk::make
 
 #include "common.h"
-PushConstants pushConstants{ 1024 /* render_width */, 600 /* render_height */ };
+PushConstants pushConstants{ 800 /* render_width */, 600 /* render_height */ };
 
 VkCommandBuffer AllocateAndBeginOneTimeCommandBuffer(VkDevice device, VkCommandPool cmdPool)
 {
@@ -254,42 +254,56 @@ int main(int argc, const char** argv)
       VK_NULL_HANDLE,          // Allocator (uses default)
       &computePipeline));      // Output
 
-  // Create and start recording a command buffer
-  VkCommandBuffer cmdBuffer = AllocateAndBeginOneTimeCommandBuffer(context, cmdPool);
+  const uint32_t NUM_SAMPLE_BATCHES = 32;
+  for (uint32_t sampleBatch = 0; sampleBatch < NUM_SAMPLE_BATCHES; sampleBatch++)
+  {
+      // Create and start recording a command buffer
+      VkCommandBuffer cmdBuffer = AllocateAndBeginOneTimeCommandBuffer(context, cmdPool);
 
-  // Bind the compute pipeline
-  vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+      // Bind the compute shader pipeline
+      vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+      // Bind the descriptor set
+      VkDescriptorSet descriptorSet = descriptorSetContainer.getSet(0);
+      vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, descriptorSetContainer.getPipeLayout(), 0, 1,
+          &descriptorSet, 0, nullptr);
 
-  // Bind the descriptor set
-  VkDescriptorSet descriptorSet = descriptorSetContainer.getSet(0);
-  vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, descriptorSetContainer.getPipeLayout(), 0, 1, &descriptorSet, 0, nullptr);
+      // Push push constants:
+      pushConstants.sample_batch = sampleBatch;
+      vkCmdPushConstants(cmdBuffer,                               // Command buffer
+          descriptorSetContainer.getPipeLayout(),  // Pipeline layout
+          VK_SHADER_STAGE_COMPUTE_BIT,             // Stage flags
+          0,                                       // Offset
+          sizeof(PushConstants),                   // Size in bytes
+          &pushConstants);                         // Data
 
-  // Push push constants:
-  vkCmdPushConstants(cmdBuffer,                // Command buffer
-      descriptorSetContainer.getPipeLayout(),  // Pipeline layout
-      VK_SHADER_STAGE_COMPUTE_BIT,             // Stage flags
-      0,                                       // Offset
-      sizeof(PushConstants),                   // Size in bytes
-      &pushConstants);                         // Data
+// Run the compute shader with enough workgroups to cover the entire buffer:
+      vkCmdDispatch(cmdBuffer, (pushConstants.render_width + WORKGROUP_WIDTH - 1) / WORKGROUP_WIDTH,
+          (pushConstants.render_height + WORKGROUP_HEIGHT - 1) / WORKGROUP_HEIGHT, 1);
 
-  // Run the compute shader with enough workgroups to cover the entire buffer:
-  vkCmdDispatch(cmdBuffer, (pushConstants.render_width + WORKGROUP_WIDTH - 1) / WORKGROUP_WIDTH, (pushConstants.render_height + WORKGROUP_HEIGHT - 1) / WORKGROUP_HEIGHT, 1);
+      // On the last sample batch:
+      if (sampleBatch == NUM_SAMPLE_BATCHES - 1)
+      {
+          // Add a command that says "Make it so that memory writes by the compute shader
+          // are available to read from the CPU." (In other words, "Flush the GPU caches
+          // so the CPU can read the data.") To do this, we use a memory barrier.
+          // This is one of the most complex parts of Vulkan, so don't worry if this is
+          // confusing! We'll talk about pipeline barriers more in the extras.
+          VkMemoryBarrier memoryBarrier = nvvk::make<VkMemoryBarrier>();
+          memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;  // Make shader writes
+          memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;     // Readable by the CPU
+          vkCmdPipelineBarrier(cmdBuffer,                              // The command buffer
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,   // From the compute shader
+              VK_PIPELINE_STAGE_HOST_BIT,             // To the CPU
+              0,                                      // No special flags
+              1, &memoryBarrier,                      // An array of memory barriers
+              0, nullptr, 0, nullptr);                // No other barriers
+      }
 
-  // Ensure that memory writes by the vkCmdFillBuffer call
-  // are available to read from the CPU." (In other words, "Flush the GPU caches
-  // so the CPU can read the data.")
-  VkMemoryBarrier memoryBarrier = nvvk::make<VkMemoryBarrier>();
-  memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;  // Make shader writes
-  memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;     // Readable by the CPU
-  vkCmdPipelineBarrier(cmdBuffer,                             // The command buffer
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,   // From the compute shader
-      VK_PIPELINE_STAGE_HOST_BIT,             // To the CPU
-      0,                                      // No special flags
-      1, &memoryBarrier,                      // An array of memory barriers
-      0, nullptr, 0, nullptr);                // No other barriers
+      // End and submit the command buffer, then wait for it to finish:
+      EndSubmitWaitAndFreeCommandBuffer(context, context.m_queueGCT, cmdPool, cmdBuffer);
 
-  // End and submit the command buffer, and then wait for it to finish with a vkQueueWaitIdle
-  EndSubmitWaitAndFreeCommandBuffer(context, context.m_queueGCT, cmdPool, cmdBuffer);
+      nvprintf("Rendered sample batch index %d.\n", sampleBatch);
+  }
 
   // Get the image data back from the GPU
   void* data = allocator.map(buffer);
