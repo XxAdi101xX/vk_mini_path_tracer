@@ -72,6 +72,9 @@ int main(int argc, const char** argv)
   // Device must support acceleration structures and ray queries:
   assert(asFeatures.accelerationStructure == VK_TRUE && rayQueryFeatures.rayQuery == VK_TRUE);
 
+  // Initialize the debug utilities
+  nvvk::DebugUtil debugUtil(context);
+
   // Create the allocator; note that nvvk::Context has an implicit cast to VkDevice
   nvvk::AllocatorDedicated allocator;
   allocator.init(context, context.m_physicalDevice);
@@ -105,6 +108,7 @@ int main(int argc, const char** argv)
   // in the same command buffer used to upload the vertex and index buffers:
   imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   nvvk::ImageDedicated image = allocator.createImage(imageCreateInfo);
+  debugUtil.setObjectName(image.image, "image");
 
   // Create an image view for the entire image
   // When we create a descriptor for the image, we'll also need an image view
@@ -128,6 +132,7 @@ int main(int argc, const char** argv)
   imageViewCreateInfo.subresourceRange.levelCount = 1;
   VkImageView imageView;
   NVVK_CHECK(vkCreateImageView(context, &imageViewCreateInfo, nullptr, &imageView));
+  debugUtil.setObjectName(imageView, "imageView");
 
   // Also create an image using linear tiling that can be accessed from the CPU,
   // much like how we created the buffer in the main tutorial. The first image
@@ -143,6 +148,7 @@ int main(int argc, const char** argv)
       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
       | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
       | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+  debugUtil.setObjectName(imageLinear.image, "imageLinear");
 
   const std::string exePath(argv[0], std::string(argv[0]).find_last_of("/\\") + 1);
   std::vector<std::string> searchPaths = { exePath + PROJECT_RELDIRECTORY, exePath + PROJECT_RELDIRECTORY "..",
@@ -167,6 +173,7 @@ int main(int argc, const char** argv)
   cmdPoolCreateInfo.queueFamilyIndex = context.m_queueGCT;
   VkCommandPool cmdPool;
   NVVK_CHECK(vkCreateCommandPool(context, &cmdPoolCreateInfo, nullptr, &cmdPool));
+  debugUtil.setObjectName(cmdPool, "cmdPool");
 
   // Upload the vertex and index buffers to the GPU
   nvvk::BufferDedicated vertexBuffer, indexBuffer;
@@ -333,6 +340,7 @@ int main(int argc, const char** argv)
 
   // Shader loading and pipeline creation
   VkShaderModule rayTraceModule = nvvk::createShaderModule(context, nvh::loadFile("shaders/raytrace.comp.glsl.spv", true, searchPaths));
+  debugUtil.setObjectName(rayTraceModule, "rayTraceModule");
 
   // Describe the entrypoint and the stage to use this shader module in the pipeline
   VkPipelineShaderStageCreateInfo shaderStageCreateInfo = nvvk::make<VkPipelineShaderStageCreateInfo>();
@@ -351,6 +359,7 @@ int main(int argc, const char** argv)
       1, &pipelineCreateInfo,  // Compute pipeline create info
       VK_NULL_HANDLE,          // Allocator (uses default)
       &computePipeline));      // Output
+  debugUtil.setObjectName(computePipeline, "computePipeline");
 
   const uint32_t NUM_SAMPLE_BATCHES = 32;
   for (uint32_t sampleBatch = 0; sampleBatch < NUM_SAMPLE_BATCHES; sampleBatch++)
