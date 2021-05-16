@@ -317,7 +317,7 @@ int main(int argc, const char** argv)
   VkPushConstantRange pushConstantRange;
   pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   pushConstantRange.offset = 0;
-  pushConstantRange.size = sizeof(pushConstants);
+  pushConstantRange.size = sizeof(PushConstants);
   // Create a simple pipeline layout from the descriptor set layout
   descriptorSetContainer.initPipeLayout(1,                   // Number of push constant ranges
                                         &pushConstantRange); // Pointer to push constant ranges

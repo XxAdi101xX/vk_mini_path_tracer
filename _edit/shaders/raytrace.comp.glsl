@@ -1,6 +1,6 @@
 // Copyright 2020 NVIDIA Corporation
 // SPDX-License-Identifier: Apache-2.0
-#version 460 
+#version 460
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : require
@@ -28,38 +28,35 @@ layout(push_constant) uniform PushConsts
   PushConstants pushConstants;
 };
 
-// Random number generation using pcg32i_random_t, using inc = 1. Our random state is a uint.
-uint stepRNG(uint rngState)
-{
-  return rngState * 747796405 + 1;
-}
-
 // Steps the RNG and returns a floating-point value between 0 and 1 inclusive.
 float stepAndOutputRNGFloat(inout uint rngState)
 {
   // Condensed version of pcg_output_rxs_m_xs_32_32, with simple conversion to floating-point [0,1].
-  rngState  = stepRNG(rngState);
+  rngState  = rngState * 747796405 + 1;
   uint word = ((rngState >> ((rngState >> 28) + 4)) ^ rngState) * 277803737;
   word      = (word >> 22) ^ word;
   return float(word) / 4294967295.0f;
 }
 
 const float k_pi = 3.14159265;
-// Uses the Box-Muller transform to return a normally distributed (centered at 0, standard deviation 1) 2D point
+
+// Uses the Box-Muller transform to return a normally distributed (centered
+// at 0, standard deviation 1) 2D point.
 vec2 randomGaussian(inout uint rngState)
 {
-  // Almost uniform in (0, 1], ensure that number can't be 0
-  const float u1 = max(1e-38, stepAndOutputRNGFloat(rngState));
-  const float u2 = stepAndOutputRNGFloat(rngState); // in [0, 1]
-  const float r = sqrt(-2.0 * log(u1));
-  const float theta = 2 * k_pi * u2; // Random in [0, 2pi]
+  // Almost uniform in (0, 1] - make sure the value is never 0:
+  const float u1    = max(1e-38, stepAndOutputRNGFloat(rngState));
+  const float u2    = stepAndOutputRNGFloat(rngState);  // In [0, 1]
+  const float r     = sqrt(-2.0 * log(u1));
+  const float theta = 2 * k_pi * u2;  // Random in [0, 2pi]
   return r * vec2(cos(theta), sin(theta));
 }
 
+// Returns the color of the sky in a given direction (in linear color space)
 vec3 skyColor(vec3 direction)
 {
-  // +y in the world space is up, so:
-  if (direction.y > 0.0f)
+  // +y in world space is up, so:
+  if(direction.y > 0.0f)
   {
     return mix(vec3(1.0f), vec3(0.25f, 0.5f, 1.0f), direction.y);
   }
@@ -117,8 +114,7 @@ HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
   const mat4x3 objectToWorldInverse = rayQueryGetIntersectionWorldToObjectEXT(rayQuery, true);
   result.worldNormal                = normalize((objectNormal * objectToWorldInverse).xyz);
 
-  result.color = vec3(0.95f);
-  //result.color = vec3(0.5) + 0.5 * result.worldNormal;
+  result.color = vec3(0.7f);
 
   return result;
 }
@@ -149,7 +145,7 @@ void main()
 
   // This scene uses a right-handed coordinate system like the OBJ file format, where the
   // +x axis points right, the +y axis points up, and the -z axis points into the screen.
-  // The camera is located at (-0.001, 1, 6).
+  // The camera is located at (-0.001, 0, 53).
   const vec3 cameraOrigin = vec3(-0.001, 0.0, 53.0);
   // Define the field of view by the vertical slope of the topmost rays:
   const float fovVerticalSlope = 1.0 / 5.0;
@@ -216,9 +212,11 @@ void main()
         // Apply color absorption
         accumulatedRayColor *= hitInfo.color;
 
-        // Start a new ray at the hit position, but offset it slightly along
-        // the normal against rayDirection:
-        rayOrigin = hitInfo.worldPosition - 0.0001 * sign(dot(rayDirection, hitInfo.worldNormal)) * hitInfo.worldNormal;
+        // Flip the normal so it points against the ray direction:
+        hitInfo.worldNormal = faceforward(hitInfo.worldNormal, rayDirection, hitInfo.worldNormal);
+
+        // Start a new ray at the hit position, but offset it slightly along the normal:
+        rayOrigin = hitInfo.worldPosition + 0.0001 * hitInfo.worldNormal;
 
         // For a random diffuse bounce direction, we follow the approach of
         // Ray Tracing in One Weekend, and generate a random point on a sphere
@@ -235,12 +233,12 @@ void main()
       {
         // Ray hit the sky
         accumulatedRayColor *= skyColor(rayDirection);
-        
+
         // Sum this with the pixel's other samples.
         // (Note that we treat a ray that didn't find a light source as if it had
         // an accumulated color of (0, 0, 0)).
         summedPixelColor += accumulatedRayColor;
-    
+
         break;
       }
     }
