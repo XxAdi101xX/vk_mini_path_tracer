@@ -28,17 +28,7 @@ layout(push_constant) uniform PushConsts
   PushConstants pushConstants;
 };
 
-// Steps the RNG and returns a floating-point value between 0 and 1 inclusive.
-float stepAndOutputRNGFloat(inout uint rngState)
-{
-  // Condensed version of pcg_output_rxs_m_xs_32_32, with simple conversion to floating-point [0,1].
-  rngState  = rngState * 747796405 + 1;
-  uint word = ((rngState >> ((rngState >> 28) + 4)) ^ rngState) * 277803737;
-  word      = (word >> 22) ^ word;
-  return float(word) / 4294967295.0f;
-}
-
-const float k_pi = 3.14159265;
+#include "shaderCommon.h"
 
 // Uses the Box-Muller transform to return a normally distributed (centered
 // at 0, standard deviation 1) 2D point.
@@ -64,59 +54,6 @@ vec3 skyColor(vec3 direction)
   {
     return vec3(0.03f);
   }
-}
-
-struct HitInfo
-{
-  vec3 color;
-  vec3 worldPosition;
-  vec3 worldNormal;
-};
-
-HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
-{
-  HitInfo result;
-  // Get the ID of the triangle
-  const int primitiveID = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true);
-
-  // Get the indices of the vertices of the triangle
-  const uint i0 = indices[3 * primitiveID + 0];
-  const uint i1 = indices[3 * primitiveID + 1];
-  const uint i2 = indices[3 * primitiveID + 2];
-
-  // Get the vertices of the triangle
-  const vec3 v0 = vertices[i0];
-  const vec3 v1 = vertices[i1];
-  const vec3 v2 = vertices[i2];
-
-  // Get the barycentric coordinates of the intersection
-  vec3 barycentrics = vec3(0.0, rayQueryGetIntersectionBarycentricsEXT(rayQuery, true));
-  barycentrics.x    = 1.0 - barycentrics.y - barycentrics.z;
-
-  // Compute the coordinates of the intersection
-  const vec3 objectPos = v0 * barycentrics.x + v1 * barycentrics.y + v2 * barycentrics.z;
-  // Transform from object space to world space:
-  const mat4x3 objectToWorld = rayQueryGetIntersectionObjectToWorldEXT(rayQuery, true);
-  result.worldPosition       = objectToWorld * vec4(objectPos, 1.0f);
-
-  // Compute the normal of the triangle in object space, using the right-hand rule:
-  //    v2      .
-  //    |\      .
-  //    | \     .
-  //    |/ \    .
-  //    /   \   .
-  //   /|    \  .
-  //  L v0---v1 .
-  // n
-  const vec3 objectNormal = cross(v1 - v0, v2 - v0);
-  // Transform normals from object space to world space. These use the transpose of the inverse matrix,
-  // because they're directions of normals, not positions:
-  const mat4x3 objectToWorldInverse = rayQueryGetIntersectionWorldToObjectEXT(rayQuery, true);
-  result.worldNormal                = normalize((objectNormal * objectToWorldInverse).xyz);
-
-  result.color = vec3(0.7f);
-
-  return result;
 }
 
 void main()
@@ -206,28 +143,48 @@ void main()
       // a generated object
       if(rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionTriangleEXT)
       {
-        // Ray hit a triangle
-        HitInfo hitInfo = getObjectHitInfo(rayQuery);
+        // Get the ID of the shader:
+        const int sbtOffset = int(rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(rayQuery, true));
+
+        // Get information about the absorption, new ray origin, and new ray color:
+        ReturnedInfo returnedInfo;
+        switch(sbtOffset)
+        {
+          case 0:
+            returnedInfo = material0(rayQuery, rngState);
+            break;
+          case 1:
+            returnedInfo = material1(rayQuery, rngState);
+            break;
+          case 2:
+            returnedInfo = material2(rayQuery, rngState);
+            break;
+          case 3:
+            returnedInfo = material3(rayQuery, rngState);
+            break;
+          case 4:
+            returnedInfo = material4(rayQuery, rngState);
+            break;
+          case 5:
+            returnedInfo = material5(rayQuery, rngState);
+            break;
+          case 6:
+            returnedInfo = material6(rayQuery, rngState);
+            break;
+          case 7:
+            returnedInfo = material7(rayQuery, rngState);
+            break;
+          default:
+            returnedInfo = material8(rayQuery, rngState);
+            break;
+        }
 
         // Apply color absorption
-        accumulatedRayColor *= hitInfo.color;
+        accumulatedRayColor *= returnedInfo.color;
 
-        // Flip the normal so it points against the ray direction:
-        hitInfo.worldNormal = faceforward(hitInfo.worldNormal, rayDirection, hitInfo.worldNormal);
-
-        // Start a new ray at the hit position, but offset it slightly along the normal:
-        rayOrigin = hitInfo.worldPosition + 0.0001 * hitInfo.worldNormal;
-
-        // For a random diffuse bounce direction, we follow the approach of
-        // Ray Tracing in One Weekend, and generate a random point on a sphere
-        // of radius 1 centered at the normal. This uses the random_unit_vector
-        // function from chapter 8.5:
-        const float theta = 2.0 * k_pi * stepAndOutputRNGFloat(rngState);  // Random in [0, 2pi]
-        const float u     = 2.0 * stepAndOutputRNGFloat(rngState) - 1.0;   // Random in [-1, 1]
-        const float r     = sqrt(1.0 - u * u);
-        rayDirection      = hitInfo.worldNormal + vec3(r * cos(theta), r * sin(theta), u);
-        // Then normalize the ray direction:
-        rayDirection = normalize(rayDirection);
+        // Start a new segment
+        rayOrigin    = returnedInfo.rayOrigin;
+        rayDirection = returnedInfo.rayDirection;
       }
       else
       {

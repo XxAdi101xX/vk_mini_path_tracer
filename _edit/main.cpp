@@ -275,6 +275,7 @@ int main(int argc, const char** argv)
   std::vector<nvvk::RaytracingBuilderKHR::Instance> instances;
   std::default_random_engine                        randomEngine;  // The random number generator
   std::uniform_real_distribution<float>             uniformDist(-0.5f, 0.5f);
+  std::uniform_int_distribution<int>                uniformIntDist(0, 8);
   for (int x = -10; x <= 10; x++)
   {
       for (int y = -10; y <= 10; y++)
@@ -288,7 +289,7 @@ int main(int argc, const char** argv)
 
           instance.instanceCustomId = 0;  // 24 bits accessible to ray shaders via rayQueryGetIntersectionInstanceCustomIndexEXT
           instance.blasId = 0;  // The index of the BLAS in `blases` that this instance points to
-          instance.hitGroupId = 0;  // Used for a shader offset index, accessible via rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT
+          instance.hitGroupId = uniformIntDist(randomEngine);  // Used for a shader offset index, accessible via rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT
           instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;  // How to trace this instance
           instances.push_back(instance);
       }
