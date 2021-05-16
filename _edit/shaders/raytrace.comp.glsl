@@ -98,8 +98,9 @@ HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
 
   // Compute the coordinates of the intersection
   const vec3 objectPos = v0 * barycentrics.x + v1 * barycentrics.y + v2 * barycentrics.z;
-  // For the main tutorial, object space is the same as world space:
-  result.worldPosition = objectPos;
+  // Transform from object space to world space:
+  const mat4x3 objectToWorld = rayQueryGetIntersectionObjectToWorldEXT(rayQuery, true);
+  result.worldPosition       = objectToWorld * vec4(objectPos, 1.0f);
 
   // Compute the normal of the triangle in object space, using the right-hand rule:
   //    v2      .
@@ -110,11 +111,13 @@ HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
   //   /|    \  .
   //  L v0---v1 .
   // n
-  const vec3 objectNormal = normalize(cross(v1 - v0, v2 - v0));
-  // For the main tutorial, object space is the same as world space:
-  result.worldNormal = objectNormal;
+  const vec3 objectNormal = cross(v1 - v0, v2 - v0);
+  // Transform normals from object space to world space. These use the transpose of the inverse matrix,
+  // because they're directions of normals, not positions:
+  const mat4x3 objectToWorldInverse = rayQueryGetIntersectionWorldToObjectEXT(rayQuery, true);
+  result.worldNormal                = normalize((objectNormal * objectToWorldInverse).xyz);
 
-  result.color = vec3(0.7f);
+  result.color = vec3(0.95f);
   //result.color = vec3(0.5) + 0.5 * result.worldNormal;
 
   return result;
@@ -147,7 +150,7 @@ void main()
   // This scene uses a right-handed coordinate system like the OBJ file format, where the
   // +x axis points right, the +y axis points up, and the -z axis points into the screen.
   // The camera is located at (-0.001, 1, 6).
-  const vec3 cameraOrigin = vec3(-0.001, 1.0, 6.0);
+  const vec3 cameraOrigin = vec3(-0.001, 0.0, 53.0);
   // Define the field of view by the vertical slope of the topmost rays:
   const float fovVerticalSlope = 1.0 / 5.0;
 

@@ -1,6 +1,7 @@
 // Copyright 2020 NVIDIA Corporation
 // SPDX-License-Identifier: Apache-2.0
 #include <array>
+#include <random>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <fileformats/stb_image_write.h>
 #define TINYOBJLOADER_IMPLEMENTATION
@@ -270,16 +271,27 @@ int main(int argc, const char** argv)
   raytracingBuilder.setup(context, &allocator, context.m_queueGCT);
   raytracingBuilder.buildBlas(blases, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR);
 
-  // Create an instance pointing to this BLAS, and build it into a TLAS
+  // Create 441 instances with random rotations pointing to BLAS 0, and build these instances into a TLAS:
   std::vector<nvvk::RaytracingBuilderKHR::Instance> instances;
+  std::default_random_engine                        randomEngine;  // The random number generator
+  std::uniform_real_distribution<float>             uniformDist(-0.5f, 0.5f);
+  for (int x = -10; x <= 10; x++)
   {
-    nvvk::RaytracingBuilderKHR::Instance instance;
-    instance.transform.identity();  // Set the instance transform to the identity matrix
-    instance.instanceCustomId = 0;  // 24 bits accessible to ray shaders via rayQueryGetIntersectionInstanceCustomIndexEXT
-    instance.blasId = 0;  // The index of the BLAS in `blases` that this instance points to
-    instance.hitGroupId = 0;  // Used for a shader offset index, accessible via rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT
-    instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;  // How to trace this instance
-    instances.push_back(instance);
+      for (int y = -10; y <= 10; y++)
+      {
+          nvvk::RaytracingBuilderKHR::Instance instance;
+          instance.transform.translate(nvmath::vec3f(float(x), float(y), 0.0f));
+          instance.transform.scale(1.0f / 2.7f);
+          instance.transform.rotate(uniformDist(randomEngine), nvmath::vec3f(0.0f, 1.0f, 0.0f));
+          instance.transform.rotate(uniformDist(randomEngine), nvmath::vec3f(1.0f, 0.0f, 0.0f));
+          instance.transform.translate(nvmath::vec3f(0.0f, -1.0f, 0.0f));
+
+          instance.instanceCustomId = 0;  // 24 bits accessible to ray shaders via rayQueryGetIntersectionInstanceCustomIndexEXT
+          instance.blasId = 0;  // The index of the BLAS in `blases` that this instance points to
+          instance.hitGroupId = 0;  // Used for a shader offset index, accessible via rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT
+          instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;  // How to trace this instance
+          instances.push_back(instance);
+      }
   }
 
   raytracingBuilder.buildTlas(instances, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
