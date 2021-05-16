@@ -15,7 +15,9 @@
 #include <nvvk/structs_vk.hpp>         // For nvvk::make
 
 #include "common.h"
-PushConstants pushConstants{ 800 /* render_width */, 600 /* render_height */ };
+PushConstants pushConstants;
+const uint32_t render_width = 800;
+const uint32_t render_height = 600;
 
 VkCommandBuffer AllocateAndBeginOneTimeCommandBuffer(VkDevice device, VkCommandPool cmdPool)
 {
@@ -74,17 +76,74 @@ int main(int argc, const char** argv)
   nvvk::AllocatorDedicated allocator;
   allocator.init(context, context.m_physicalDevice);
 
-  // Create a buffer
-  VkDeviceSize bufferSizeBytes = pushConstants.render_width * pushConstants.render_height * 3 * sizeof(float);
-  VkBufferCreateInfo bufferCreateInfo = nvvk::make<VkBufferCreateInfo>();
-  bufferCreateInfo.size = bufferSizeBytes;
-  bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-  // VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT means that the CPU can read this buffer's memory.
-  // VK_MEMORY_PROPERTY_HOST_CACHED_BIT means that the CPU caches this memory.
-  // VK_MEMORY_PROPERTY_HOST_COHERENT_BIT means that the CPU side of cache management
-  // is handled automatically, with potentially slower reads/writes.
+  // Create an image. Images are more complex than buffers - they can have
+  // multiple dimensions, different color+depth formats, be arrays of mips,
+  // have multisampling, be tiled in memory in e.g. row-linear order or in an
+  // implementation-dependent way (and this layout of memory can depend on
+  // what the image is being used for), and be shared across multiple queues.
+  // Here's how we specify the image we'll use:
+  VkImageCreateInfo imageCreateInfo = nvvk::make<VkImageCreateInfo>();
+  imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+  // RGB32 images aren't usually supported so we will use RGBA32
+  imageCreateInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  // Define the size of the image
+  imageCreateInfo.extent = { render_width, render_height, 1 };
+  // The image is an array of length one where each element contains 1 mip
+  imageCreateInfo.mipLevels = 1;
+  imageCreateInfo.arrayLayers = 1;
+  // We aren't using MSAA (i.e. the image only contains 1 sample per pixel -
+  // note that this isn't the same use of the word "sample" as in ray tracing):
+  imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  // The driver controls the tiling of the image for performance
+  imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  // The image is read and written on the GPU, and data can be transferred from it 
+  imageCreateInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  // The image is only used by one queue
+  imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  // The image must be in either VK_IMAGE_LAYOUT_UNDEFINED or VK_IMAGE_LAYOUT_PREINITIALIZED
+  // according to the specification; we'll transition the layout shortly,
+  // in the same command buffer used to upload the vertex and index buffers:
+  imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  nvvk::ImageDedicated image = allocator.createImage(imageCreateInfo);
 
-  nvvk::BufferDedicated buffer = allocator.createBuffer(bufferCreateInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  // Create an image view for the entire image
+  // When we create a descriptor for the image, we'll also need an image view
+  // that the descriptor will point to. This specifies what part of the image
+  // the descriptor views, and how the descriptor views it.
+  VkImageViewCreateInfo imageViewCreateInfo = nvvk::make<VkImageViewCreateInfo>();
+  imageViewCreateInfo.image = image.image;
+  imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  imageViewCreateInfo.format = imageCreateInfo.format;
+  // We could use imageViewCreateInfo.components to make the components of the
+  // image appear to be "swizzled", but we don't want to do that. Luckily,
+  // all values are set to VK_COMPONENT_SWIZZLE_IDENTITY, which means
+  // "don't change anything", by nvvk::make or zero initialization.
+  // This says that the ImageView views the color part of the image (since
+  // images can contain depth or stencil aspects):
+  imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  // This says that we only look at array layer 0 and mip level 0
+  imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
+  imageViewCreateInfo.subresourceRange.layerCount = 1;
+  imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
+  imageViewCreateInfo.subresourceRange.levelCount = 1;
+  VkImageView imageView;
+  NVVK_CHECK(vkCreateImageView(context, &imageViewCreateInfo, nullptr, &imageView));
+
+  // Also create an image using linear tiling that can be accessed from the CPU,
+  // much like how we created the buffer in the main tutorial. The first image
+  // will be entirely local to the GPU for performance, while this image can
+  // be mapped to CPU memory. We'll copy data from the first image to this
+  // image in order to read the image data back on the CPU.
+  // As before, we'll transition the image layout in the same command buffer
+  // used to upload the vertex and index buffers.
+  imageCreateInfo.tiling = VK_IMAGE_TILING_LINEAR;
+  imageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  nvvk::ImageDedicated imageLinear = allocator.createImage(
+      imageCreateInfo,
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+      | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+      | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+
   const std::string exePath(argv[0], std::string(argv[0]).find_last_of("/\\") + 1);
   std::vector<std::string> searchPaths = { exePath + PROJECT_RELDIRECTORY, exePath + PROJECT_RELDIRECTORY "..",
                                           exePath + PROJECT_RELDIRECTORY "../..", exePath + PROJECT_NAME };
@@ -122,6 +181,43 @@ int main(int argc, const char** argv)
     // Note that the allocator is using a staging buffer internally to facilitate the transfer of data from the CPU to the GPU
     vertexBuffer = allocator.createBuffer(uploadCmdBuffer, objVertices, usage);
     indexBuffer = allocator.createBuffer(uploadCmdBuffer, objIndices, usage);
+    // Also, let's transition the layout of `image` to `VK_IMAGE_LAYOUT_GENERAL`,
+    // and the layout of `imageLinear` to `VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL`.
+    // Although we use `imageLinear` later, we're transferring its layout as
+    // early as possible. For more complex applications, tracking images and
+    // operations using a graph is a good way to handle these types of images
+    // automatically. However, for this tutorial, we'll show how to write
+    // image transitions by hand.
+
+    // To do this, we combine both transitions in a single pipeline barrier.
+    // This pipeline barrier will say "Make it so that all writes to memory by
+    const VkAccessFlags srcAccesses = 0;  // (since image and imageLinear aren't initially accessible)
+    // finish and can be read correctly by
+    const VkAccessFlags dstImageAccesses = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;  // for image
+    const VkAccessFlags dstImageLinearAccesses = VK_ACCESS_TRANSFER_WRITE_BIT;  // for imageLinear
+
+    // Here's how to do that:
+    const VkPipelineStageFlags srcStages = nvvk::makeAccessMaskPipelineStageFlags(srcAccesses);
+    const VkPipelineStageFlags dstStages = nvvk::makeAccessMaskPipelineStageFlags(dstImageAccesses | dstImageLinearAccesses);
+    VkImageMemoryBarrier       imageBarriers[2];
+    // Image memory barrier for `image` from UNDEFINED to GENERAL layout:
+    imageBarriers[0] = nvvk::makeImageMemoryBarrier(image.image,                    // The VkImage
+        srcAccesses, dstImageAccesses,  // Source and destination access masks
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,  // Source and destination layouts
+        VK_IMAGE_ASPECT_COLOR_BIT);  // Aspects of an image (color, depth, etc.)
+// Image memory barrier for `imageLinear` from UNDEFINED to TRANSFER_DST_OPTIMAL layout:
+    imageBarriers[1] = nvvk::makeImageMemoryBarrier(imageLinear.image,                    // The VkImage
+        srcAccesses, dstImageLinearAccesses,  // Source and destination access masks
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,  // Source and dst layouts
+        VK_IMAGE_ASPECT_COLOR_BIT);  // Aspects of an image (color, depth, etc.)
+// Include the two image barriers in the pipeline barrier:
+    vkCmdPipelineBarrier(
+        uploadCmdBuffer,       // The command buffer
+        srcStages, dstStages,  // Src and dst pipeline stages
+        0,                     // Flags for memory dependencies
+        0, nullptr,            // Global memory barrier objects
+        0, nullptr,            // Buffer memory barrier objects
+        2, imageBarriers);     // Image barrier objects
 
     EndSubmitWaitAndFreeCommandBuffer(context, context.m_queueGCT, cmdPool, uploadCmdBuffer);
     allocator.finalizeAndReleaseStaging();
@@ -182,10 +278,12 @@ int main(int argc, const char** argv)
   raytracingBuilder.buildTlas(instances, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
 
   // Here's the list of bindings for the descriptor set layout, from raytrace.comp.glsl:
-  // 0 - a storage buffer (the buffer `buffer`)
+  // 0 - a storage image (the image `image`)
   // 1 - an acceleration structure (the TLAS)
+  // 2 - a storage buffer (the vertex buffer)
+  // 3 - a storage buffer (the index buffer)
   nvvk::DescriptorSetContainer descriptorSetContainer(context);
-  descriptorSetContainer.addBinding(BINDING_IMAGEDATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  descriptorSetContainer.addBinding(BINDING_IMAGEDATA, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
   descriptorSetContainer.addBinding(BINDING_TLAS, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT);
   descriptorSetContainer.addBinding(BINDING_VERTICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
   descriptorSetContainer.addBinding(BINDING_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
@@ -208,10 +306,10 @@ int main(int argc, const char** argv)
   // Write values into the descriptor set.
   std::array<VkWriteDescriptorSet, 4> writeDescriptorSets;
   // 0
-  VkDescriptorBufferInfo descriptorBufferInfo{};
-  descriptorBufferInfo.buffer = buffer.buffer;    // The VkBuffer object
-  descriptorBufferInfo.range = bufferSizeBytes;  // The length of memory to bind; offset is 0.
-  writeDescriptorSets[0] = descriptorSetContainer.makeWrite(0 /*set index*/, BINDING_IMAGEDATA /*binding*/, &descriptorBufferInfo);
+  VkDescriptorImageInfo descriptorImageInfo{};
+  descriptorImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;  // The image's layout
+  descriptorImageInfo.imageView = imageView;                // How the image should be accessed
+  writeDescriptorSets[0] = descriptorSetContainer.makeWrite(0 /*set index*/, BINDING_IMAGEDATA /*binding*/, &descriptorImageInfo);
   // 1
   VkWriteDescriptorSetAccelerationStructureKHR descriptorAS = nvvk::make<VkWriteDescriptorSetAccelerationStructureKHR>();
   VkAccelerationStructureKHR tlasCopy = raytracingBuilder.getAccelerationStructure();  // So that we can take its address
@@ -277,26 +375,65 @@ int main(int argc, const char** argv)
           &pushConstants);                         // Data
 
 // Run the compute shader with enough workgroups to cover the entire buffer:
-      vkCmdDispatch(cmdBuffer, (pushConstants.render_width + WORKGROUP_WIDTH - 1) / WORKGROUP_WIDTH,
-          (pushConstants.render_height + WORKGROUP_HEIGHT - 1) / WORKGROUP_HEIGHT, 1);
+      vkCmdDispatch(cmdBuffer, (render_width + WORKGROUP_WIDTH - 1) / WORKGROUP_WIDTH,
+          (render_height + WORKGROUP_HEIGHT - 1) / WORKGROUP_HEIGHT, 1);
 
       // On the last sample batch:
       if (sampleBatch == NUM_SAMPLE_BATCHES - 1)
       {
-          // Add a command that says "Make it so that memory writes by the compute shader
+          // Transition `image` from GENERAL to TRANSFER_SRC_OPTIMAL layout. See the
+          // code for uploadCmdBuffer above to see a description of what this does:
+          const VkAccessFlags        srcAccesses = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+          const VkAccessFlags        dstAccesses = VK_ACCESS_TRANSFER_READ_BIT;
+          const VkPipelineStageFlags srcStages = nvvk::makeAccessMaskPipelineStageFlags(srcAccesses);
+          const VkPipelineStageFlags dstStages = nvvk::makeAccessMaskPipelineStageFlags(dstAccesses);
+          const VkImageMemoryBarrier barrier =
+              nvvk::makeImageMemoryBarrier(image.image,               // The VkImage
+                  srcAccesses, dstAccesses,  // Src and dst access masks
+                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,  // Src and dst layouts
+                  VK_IMAGE_ASPECT_COLOR_BIT);
+          vkCmdPipelineBarrier(cmdBuffer,             // Command buffer
+              srcStages, dstStages,  // Src and dst pipeline stages
+              0,                     // Dependency flags
+              0, nullptr,            // Global memory barriers
+              0, nullptr,            // Buffer memory barriers
+              1, &barrier);          // Image memory barriers
+
+          // Now, copy the image (which has layout TRANSFER_SRC_OPTIMAL) to imageLinear
+          // (which has layout TRANSFER_DST_OPTIMAL).
+          {
+              VkImageCopy region;
+              // We copy the image aspect, layer 0, mip 0:
+              region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+              region.srcSubresource.baseArrayLayer = 0;
+              region.srcSubresource.layerCount = 1;
+              region.srcSubresource.mipLevel = 0;
+              // (0, 0, 0) in the first image corresponds to (0, 0, 0) in the second image:
+              region.srcOffset = { 0, 0, 0 };
+              region.dstSubresource = region.srcSubresource;
+              region.dstOffset = { 0, 0, 0 };
+              // Copy the entire image:
+              region.extent = { render_width, render_height, 1 };
+              vkCmdCopyImage(cmdBuffer,                             // Command buffer
+                  image.image,                           // Source image
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,  // Source image layout
+                  imageLinear.image,                     // Destination image
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,  // Destination image layout
+                  1, &region);                           // Regions
+          }
+
+          // Add a command that says "Make it so that memory writes by transfers
           // are available to read from the CPU." (In other words, "Flush the GPU caches
           // so the CPU can read the data.") To do this, we use a memory barrier.
-          // This is one of the most complex parts of Vulkan, so don't worry if this is
-          // confusing! We'll talk about pipeline barriers more in the extras.
           VkMemoryBarrier memoryBarrier = nvvk::make<VkMemoryBarrier>();
-          memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;  // Make shader writes
-          memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;     // Readable by the CPU
-          vkCmdPipelineBarrier(cmdBuffer,                              // The command buffer
-              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,   // From the compute shader
-              VK_PIPELINE_STAGE_HOST_BIT,             // To the CPU
-              0,                                      // No special flags
-              1, &memoryBarrier,                      // An array of memory barriers
-              0, nullptr, 0, nullptr);                // No other barriers
+          memoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;  // Make transfer writes
+          memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;       // Readable by the CPU
+          vkCmdPipelineBarrier(cmdBuffer,                                // The command buffer
+              VK_PIPELINE_STAGE_TRANSFER_BIT,           // From transfers
+              VK_PIPELINE_STAGE_HOST_BIT,               // To the CPU
+              0,                                        // No special flags
+              1, &memoryBarrier,                        // An array of memory barriers
+              0, nullptr, 0, nullptr);
       }
 
       // End and submit the command buffer, then wait for it to finish:
@@ -305,10 +442,11 @@ int main(int argc, const char** argv)
       nvprintf("Rendered sample batch index %d.\n", sampleBatch);
   }
 
-  // Get the image data back from the GPU
-  void* data = allocator.map(buffer);
-  stbi_write_hdr("out.hdr", pushConstants.render_width, pushConstants.render_height, 3, reinterpret_cast<float*>(data));
-  allocator.unmap(buffer);
+  // Contents of imageLinear (which is accessible from the CPU) into out.hdr
+  void* data;
+  NVVK_CHECK(vkMapMemory(context, imageLinear.allocation, 0, VK_WHOLE_SIZE, 0, &data));
+  stbi_write_hdr("out.hdr", render_width, render_height, 4, reinterpret_cast<float*>(data));
+  vkUnmapMemory(context, imageLinear.allocation);
 
   vkDestroyPipeline(context ,computePipeline, nullptr);
   vkDestroyShaderModule(context, rayTraceModule, nullptr);
@@ -317,7 +455,9 @@ int main(int argc, const char** argv)
   allocator.destroy(vertexBuffer);
   allocator.destroy(indexBuffer);
   vkDestroyCommandPool(context, cmdPool, nullptr);
-  allocator.destroy(buffer);
+  allocator.destroy(imageLinear);
+  vkDestroyImageView(context, imageView, nullptr);
+  allocator.destroy(image);
   allocator.deinit();
   context.deinit();
 }

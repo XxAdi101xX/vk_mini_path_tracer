@@ -1,5 +1,6 @@
 // Common files shared across c++ CPU code and GLSL GPU Code
-#pragma once
+#ifndef VK_MINI_PATH_TRACER_COMMON_H
+#define VK_MINI_PATH_TRACER_COMMON_H
 
 #ifdef __cplusplus
 #include <cstdint>
@@ -8,8 +9,6 @@ using uint = uint32_t;
 
 struct PushConstants
 {
-	uint render_width;
-	uint render_height;
 	uint sample_batch;
 };
 
@@ -20,3 +19,5 @@ struct PushConstants
 #define BINDING_TLAS 1
 #define BINDING_VERTICES 2
 #define BINDING_INDICES 3
+
+#endif // #ifndef VK_MINI_PATH_TRACER_COMMON_H

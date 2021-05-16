@@ -8,13 +8,12 @@
 
 layout(local_size_x = WORKGROUP_WIDTH, local_size_y = WORKGROUP_HEIGHT, local_size_z = 1) in;
 
-// The scalar layout qualifier here means to align types according to the alignment
-// of their scalar components, instead of e.g. padding them to std140 rules (of 4 bytes long).
-layout(binding = BINDING_IMAGEDATA, set = 0, scalar) buffer storageBuffer
-{
-  vec3 imageData[];
-};
+// Binding BINDING_IMAGEDATA in set 0 is a storage image with four 32-bit floating-point channels,
+// defined using a uniform image2D variable.
+layout(binding = BINDING_IMAGEDATA, set = 0, rgba32f) uniform image2D storageImage;
 layout(binding = BINDING_TLAS, set = 0) uniform accelerationStructureEXT tlas;
+// The scalar layout qualifier here means to align types according to the alignment
+// of their scalar components, instead of e.g. padding them to std140 rules.
 layout(binding = BINDING_VERTICES, set = 0, scalar) buffer Vertices
 {
   vec3 vertices[];
@@ -23,6 +22,7 @@ layout(binding = BINDING_INDICES, set = 0, scalar) buffer Indices
 {
   uint indices[];
 };
+
 layout(push_constant) uniform PushConsts
 {
   PushConstants pushConstants;
@@ -122,9 +122,8 @@ HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
 
 void main()
 {
-  // The resolution of the buffer, which in this case is a hardcoded vector
-  // of 2 unsigned integers:
-  const uvec2 resolution = uvec2(pushConstants.render_width, pushConstants.render_height);
+  // The resolution of the image:
+  const ivec2 resolution = imageSize(storageImage);
 
   // Get the coordinates of the pixel for this invocation:
   //
@@ -134,7 +133,7 @@ void main()
   // '-------'
   // v
   // y
-  const uvec2 pixel = gl_GlobalInvocationID.xy;
+  const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 
   // If the pixel is outside of the image, don't do anything:
   if((pixel.x >= resolution.x) || (pixel.y >= resolution.y))
@@ -142,8 +141,8 @@ void main()
     return;
   }
 
-  // State of the random number generator.
-  uint rngState = (pushConstants.sample_batch * resolution.y + pixel.y) * resolution.x + pixel.x;  // Initial seed
+  // State of the random number generator with an initial seed.
+  uint rngState = uint((pushConstants.sample_batch * resolution.y + pixel.y) * resolution.x + pixel.x);
 
   // This scene uses a right-handed coordinate system like the OBJ file format, where the
   // +x axis points right, the +y axis points up, and the -z axis points into the screen.
@@ -244,14 +243,16 @@ void main()
     }
   }
 
-  // Get the index of this invocation in the buffer:
-  uint linearIndex       = resolution.x * pixel.y + pixel.x;
   // Blend with the averaged image in the buffer:
   vec3 averagePixelColor = summedPixelColor / float(NUM_SAMPLES);
   if(pushConstants.sample_batch != 0)
   {
+    // Read the storage image:
+    const vec3 previousAverageColor = imageLoad(storageImage, pixel).rgb;
+    // Compute the new average:
     averagePixelColor =
-        (pushConstants.sample_batch * imageData[linearIndex] + averagePixelColor) / (pushConstants.sample_batch + 1);
+        (pushConstants.sample_batch * previousAverageColor + averagePixelColor) / (pushConstants.sample_batch + 1);
   }
-  imageData[linearIndex] = averagePixelColor;
+  // Set the color of the pixel `pixel` in the storage image to `averagePixelColor`:
+  imageStore(storageImage, pixel, vec4(averagePixelColor, 0.0));
 }
