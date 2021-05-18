@@ -314,7 +314,7 @@ int main(int argc, const char** argv)
 
             instance.instanceCustomId = 0;  // 24 bits accessible to ray shaders via gl_InstanceCustomIndex
             instance.blasId = 0;  // The index of the BLAS in `blases` that this instance points to
-            instance.hitGroupId = uniformIntDist(randomEngine);  // An offset that will be added when looking up the instance's shader in the SBT.
+            instance.hitGroupId = 0;  // An offset that will be added when looking up the instance's shader in the SBT.
             instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;  // How to trace this instance
             instances.push_back(instance);
         }
@@ -374,9 +374,14 @@ int main(int argc, const char** argv)
         0, nullptr);  // An array of VkCopyDescriptorSet objects (unused)
 
 // Shader loading and pipeline creation
-    VkShaderModule rayGenModule =
-        nvvk::createShaderModule(context, nvh::loadFile("shaders/raytrace.rgen.glsl.spv", true, searchPaths));
-    debugUtil.setObjectName(rayGenModule, "rayGenModule");
+    const size_t                                      NUM_C_HIT_SHADERS = 1;
+    std::array<VkShaderModule, 2 + NUM_C_HIT_SHADERS> modules;
+    modules[0] = nvvk::createShaderModule(context, nvh::loadFile("shaders/raytrace.rgen.glsl.spv", true, searchPaths));
+    debugUtil.setObjectName(modules[0], "Ray generation module (raytrace.rgen.glsl.spv)");
+    modules[1] = nvvk::createShaderModule(context, nvh::loadFile("shaders/raytrace.rmiss.glsl.spv", true, searchPaths));
+    debugUtil.setObjectName(modules[1], "Miss module (raytrace.rmiss.glsl.spv)");
+    modules[2] = nvvk::createShaderModule(context, nvh::loadFile("shaders/material0.rchit.glsl.spv", true, searchPaths));
+    debugUtil.setObjectName(modules[2], "Material 0 shader module");
 
     // Create the shader binding table and ray tracing pipeline.
     // We'll create the ray tracing pipeline by specifying the shaders + layout,
@@ -389,20 +394,28 @@ int main(int argc, const char** argv)
         // These are called "shader stages" in this context.
         // These are shader module + entry point + stage combinations, because each
         // shader module can contain multiple entry points (e.g. main1, main2...)
-        std::array<VkPipelineShaderStageCreateInfo, 1> stages;  // Pointers to shaders
+        std::array<VkPipelineShaderStageCreateInfo, 2 + NUM_C_HIT_SHADERS> stages;  // Pointers to shaders
 
         // Stage 0 will be the raygen shader.
         stages[0] = nvvk::make<VkPipelineShaderStageCreateInfo>();
         stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;  // Kind of shader
-        stages[0].module = rayGenModule;                    // Contains the shader
+        stages[0].module = modules[0];                      // Contains the shader
         stages[0].pName = "main";                          // Name of the entry point
+        // Stage 1 will be the miss shader.
+        stages[1] = stages[0];
+        stages[1].stage = VK_SHADER_STAGE_MISS_BIT_KHR;  // Kind of shader
+        stages[1].module = modules[1];                    // Contains the shader
+        // Stage 2 will be the closest-hit shader.
+        stages[2] = stages[0];
+        stages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;  // Kind of shader
+        stages[2].module = modules[2];                           // Contains the shader
 
         // Then we make groups point to the shader stages. Each group can point to
         // 1-3 shader stages depending on the type, by specifying the index in the
         // stages array. These groups of handles then become the most important
         // part of the entries in the shader binding table.
         // Stores the indices of stages in each group:
-        std::array<VkRayTracingShaderGroupCreateInfoKHR, 1> groups;
+        std::array<VkRayTracingShaderGroupCreateInfoKHR, 2 + NUM_C_HIT_SHADERS> groups;
 
         // The vkCmdTraceRays call will eventually refer to ray gen, miss, hit, and
         // callable shader binding tables and ranges.
@@ -422,6 +435,16 @@ int main(int argc, const char** argv)
         groups[0] = nvvk::make<VkRayTracingShaderGroupCreateInfoKHR>();
         groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
         groups[0].generalShader = 0;  // Index of ray gen, miss, or callable in `stages`
+        // MISS SHADER REGION
+        // Group 1 - points to Stage 1
+        groups[1] = nvvk::make<VkRayTracingShaderGroupCreateInfoKHR>();
+        groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+        groups[1].generalShader = 1;  // Index of ray gen, miss, or callable in `stages`
+        // CLOSEST-HIT REGION
+        // Group 2 - uses Stage 2 as its closest-hit shader
+        groups[2] = nvvk::make<VkRayTracingShaderGroupCreateInfoKHR>();
+        groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+        groups[2].closestHitShader = 2;  // Index of closest hit in `stages`
 
         // Now, describe the ray tracing pipeline, ike creating a compute pipeline:
         VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo = nvvk::make<VkRayTracingPipelineCreateInfoKHR>();
@@ -483,11 +506,13 @@ int main(int argc, const char** argv)
         sbtRayGenRegion.stride = sbtStride;        // Uses this stride
         sbtRayGenRegion.size = sbtStride;        // Is this number of bytes long (1 group)
 
-        sbtMissRegion = sbtRayGenRegion;  // The miss shader region:
-        sbtMissRegion.size = 0;                // Is empty
+        sbtMissRegion = sbtRayGenRegion;              // The miss shader region:
+        sbtMissRegion.deviceAddress = sbtStartAddress + sbtStride;  // Starts sbtStride bytes (1 group) in
+        sbtMissRegion.size = sbtStride;                    // Is this number of bytes long (1 group)
 
-        sbtHitRegion = sbtRayGenRegion;  // The hit group region:
-        sbtHitRegion.size = 0;                // Is empty
+        sbtHitRegion = sbtRayGenRegion;                  // The hit group region:
+        sbtHitRegion.deviceAddress = sbtStartAddress + 2 * sbtStride;  // Starts 2 * sbtStride bytes (2 groups) in
+        sbtHitRegion.size = sbtStride * NUM_C_HIT_SHADERS;    // Is this number of bytes long
 
         sbtCallableRegion = sbtRayGenRegion;  // The callable shader region:
         sbtCallableRegion.size = 0;                // Is empty
@@ -597,7 +622,10 @@ int main(int argc, const char** argv)
 
     allocator.destroy(rtSBTBuffer);
     vkDestroyPipeline(context, rtPipeline, nullptr);
-    vkDestroyShaderModule(context, rayGenModule, nullptr);
+    for (VkShaderModule& shaderModule : modules)
+    {
+        vkDestroyShaderModule(context, shaderModule, nullptr);
+    }
     descriptorSetContainer.deinit();
     raytracingBuilder.destroy();
     allocator.destroy(vertexBuffer);
