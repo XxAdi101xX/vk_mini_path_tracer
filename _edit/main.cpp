@@ -227,7 +227,7 @@ int main(int argc, const char** argv)
 
         // To do this, we combine both transitions in a single pipeline barrier.
         // This pipeline barrier will say "Make it so that all writes to memory by
-        const VkAccessFlags srcAccesses = 0;  // (since image and imageLinear aren't initially accessible)
+        const VkAccessFlags srcAccesses = 0;  // Since image and imageLinear aren't initially accessible
         // finish and can be read correctly by
         const VkAccessFlags dstImageAccesses = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;  // for image
         const VkAccessFlags dstImageLinearAccesses = VK_ACCESS_TRANSFER_WRITE_BIT;  // for imageLinear
@@ -312,9 +312,9 @@ int main(int argc, const char** argv)
             instance.transform.rotate(uniformDist(randomEngine), nvmath::vec3f(1.0f, 0.0f, 0.0f));
             instance.transform.translate(nvmath::vec3f(0.0f, -1.0f, 0.0f));
 
-            instance.instanceCustomId = 0;  // 24 bits accessible to ray shaders via gl_InstanceCustomIndex
+            instance.instanceCustomId = uniformIntDist(randomEngine);;  // 24 bits accessible to ray shaders via gl_InstanceCustomIndex
             instance.blasId = 0;  // The index of the BLAS in `blases` that this instance points to
-            instance.hitGroupId = 0;  // An offset that will be added when looking up the instance's shader in the SBT.
+            instance.hitGroupId = instance.instanceCustomId;  // An offset that will be added when looking up the instance's shader in the SBT.
             instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;  // How to trace this instance
             instances.push_back(instance);
         }
@@ -374,14 +374,21 @@ int main(int argc, const char** argv)
         0, nullptr);  // An array of VkCopyDescriptorSet objects (unused)
 
 // Shader loading and pipeline creation
-    const size_t                                      NUM_C_HIT_SHADERS = 1;
+    const size_t                                      NUM_C_HIT_SHADERS = 9;
     std::array<VkShaderModule, 2 + NUM_C_HIT_SHADERS> modules;
     modules[0] = nvvk::createShaderModule(context, nvh::loadFile("shaders/raytrace.rgen.glsl.spv", true, searchPaths));
     debugUtil.setObjectName(modules[0], "Ray generation module (raytrace.rgen.glsl.spv)");
     modules[1] = nvvk::createShaderModule(context, nvh::loadFile("shaders/raytrace.rmiss.glsl.spv", true, searchPaths));
     debugUtil.setObjectName(modules[1], "Miss module (raytrace.rmiss.glsl.spv)");
-    modules[2] = nvvk::createShaderModule(context, nvh::loadFile("shaders/material0.rchit.glsl.spv", true, searchPaths));
-    debugUtil.setObjectName(modules[2], "Material 0 shader module");
+    for (int closestHitShaderIdx = 0; closestHitShaderIdx < NUM_C_HIT_SHADERS; closestHitShaderIdx++)
+    {
+        const int         moduleIdx = 2 + closestHitShaderIdx;
+        const std::string filename = "shaders/material" + std::to_string(closestHitShaderIdx) + ".rchit.glsl.spv";
+        modules[moduleIdx] = nvvk::createShaderModule(context, nvh::loadFile(filename, true, searchPaths));
+
+        const std::string debugName = "Material " + std::to_string(closestHitShaderIdx) + " shader module";
+        debugUtil.setObjectName(modules[moduleIdx], debugName);
+    }
 
     // Create the shader binding table and ray tracing pipeline.
     // We'll create the ray tracing pipeline by specifying the shaders + layout,
@@ -405,10 +412,14 @@ int main(int argc, const char** argv)
         stages[1] = stages[0];
         stages[1].stage = VK_SHADER_STAGE_MISS_BIT_KHR;  // Kind of shader
         stages[1].module = modules[1];                    // Contains the shader
-        // Stage 2 will be the closest-hit shader.
-        stages[2] = stages[0];
-        stages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;  // Kind of shader
-        stages[2].module = modules[2];                           // Contains the shader
+        // Stages 2 through the end will be closest-hit shaders.
+        for (int closestHitShaderIdx = 0; closestHitShaderIdx < NUM_C_HIT_SHADERS; closestHitShaderIdx++)
+        {
+            const int moduleIdx = 2 + closestHitShaderIdx;
+            stages[moduleIdx] = stages[0];
+            stages[moduleIdx].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+            stages[moduleIdx].module = modules[moduleIdx];
+        }
 
         // Then we make groups point to the shader stages. Each group can point to
         // 1-3 shader stages depending on the type, by specifying the index in the
@@ -441,10 +452,14 @@ int main(int argc, const char** argv)
         groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
         groups[1].generalShader = 1;  // Index of ray gen, miss, or callable in `stages`
         // CLOSEST-HIT REGION
-        // Group 2 - uses Stage 2 as its closest-hit shader
-        groups[2] = nvvk::make<VkRayTracingShaderGroupCreateInfoKHR>();
-        groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-        groups[2].closestHitShader = 2;  // Index of closest hit in `stages`
+        // Group N - uses Stage N as its closest-hit shader
+        for (int closestHitShaderIdx = 0; closestHitShaderIdx < NUM_C_HIT_SHADERS; closestHitShaderIdx++)
+        {
+            const int moduleIdx = 2 + closestHitShaderIdx;
+            groups[moduleIdx] = nvvk::make<VkRayTracingShaderGroupCreateInfoKHR>();
+            groups[moduleIdx].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+            groups[moduleIdx].closestHitShader = moduleIdx;  // Index of closest-hit in `stages`
+        }
 
         // Now, describe the ray tracing pipeline, ike creating a compute pipeline:
         VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo = nvvk::make<VkRayTracingPipelineCreateInfoKHR>();
