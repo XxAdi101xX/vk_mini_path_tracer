@@ -1,9 +1,10 @@
 // Common file defining all the functions used for materials.
-// In the next chapter, this file will be shared across closest-hit shaders.
+// In the next subchapter, this file will be shared across closest-hit shaders.
 #ifndef VK_MINI_PATH_TRACER_SHADER_COMMON_H
 #define VK_MINI_PATH_TRACER_SHADER_COMMON_H
 
-// Info retrieved from a rayQueryEXT by getObjectHitInfo.
+// This chapter doesn't use ray queries, but many readers will have this file
+// from e10_materials. We'll modify this file in rt_pipeline_2.
 struct HitInfo
 {
     vec3 objectPosition;  // The intersection position in object-space.
@@ -73,7 +74,7 @@ HitInfo getObjectHitInfo(rayQueryEXT rayQuery)
 //
 // However, this code uses an improved technique by Carsten Wächter and
 // Nikolaus Binder from "A Fast and Robust Method for Avoiding
-// Self-Intersection" from Ray Tracing Gems (verion 1.7, 2020).
+// Self-Intersection" from Ray Tracing Gems (version 1.7, 2020).
 // The normal can be negated if one wants the ray to pass through
 // the surface instead.
 vec3 offsetPositionAlongNormal(vec3 worldPosition, vec3 normal)
